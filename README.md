@@ -147,19 +147,19 @@ To ensure a robust and fair assignment of agents for each decision-making task, 
 
 1. **Agent Pool and Selection Criteria:**
 
-   - Let \( A \) represent the set of all available agents.
-   - Agents for a task \( R \) are selected as \( R = \{ a_i \in A \mid 1 \leq i \leq n \} \), with \( n \) being the total number of agents and \( |R| = n \).
+   - Let $\( A \)$ represent the set of all available agents.
+   - Agents for a task $\( R \)$ are selected as $$\( R = \{ a_i \in A \mid 1 \leq i \leq n \} \)$$, with $\( n \)$ being the total number of agents and $$\( |R| = n \)$$.
 
 2. **Ensuring an Odd Number of Agents:**
 
-   - The number of agents, \( n \), is set as \( n = 2k + 1 \), where \( k \) is an integer, to always have an odd number.
+   - The number of agents, $\( n \)$, is set as $$\( n = 2k + 1 \)$$, where $\( k \)$ is an integer, to always have an odd number.
 
 3. **Randomized and Criteria-Based Assignment:**
 
-   - The selection probability of an agent \( a_i \) is denoted as \( P(a_i) \), influenced by reputation, position in the assignment pool, and waiting time.
+   - The selection probability of an agent $\( a_i \)$ is denoted as $\( P(a_i) \)$, influenced by reputation, position in the assignment pool, and waiting time.
 
 4. **Assignment Ordination Based on Criteria:**
-   - A scoring function \( f: A \rightarrow \mathbb{R} \) orders agents in the pool. Agents with higher scores, reflecting their suitability based on the criteria, are prioritized for selection.
+   - A scoring function $$\( f: A \rightarrow \mathbb{R} \)$$ orders agents in the pool. Agents with higher scores, reflecting their suitability based on the criteria, are prioritized for selection.
 
 This framework ensures a transparent, fair, and effective approach to forming decision-making groups within the AI consent engine, achieving balanced and representative consensus outcomes.
 
@@ -171,8 +171,8 @@ This framework ensures a transparent, fair, and effective approach to forming de
 
 2. **Voting Power Adjustment Mechanism:**
 
-   - **Performance Evaluation Function:** A function \( e: R \rightarrow [0, 1] \) evaluates the performance of each agent based on their decision accuracy and alignment with the consensus.
-   - **Dynamic Voting Power Adjustment:** The voting power of each agent is recalibrated using the function \( v(a_i, e(a_i)) \), adjusting the influence of each agent in future decisions based on their performance score \( e(a_i) \).
+   - **Performance Evaluation Function:** A function $$\( e: R \rightarrow [0, 1] \)$$ evaluates the performance of each agent based on their decision accuracy and alignment with the consensus.
+   - **Dynamic Voting Power Adjustment:** The voting power of each agent is recalibrated using the function $$\( v(a_i, e(a_i)) \)$$, adjusting the influence of each agent in future decisions based on their performance score \( e(a_i) \).
 
 3. **Ensuring Decision Integrity:**
 
