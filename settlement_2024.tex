@@ -1,13 +1,24 @@
-\hypertarget{ai-multi-agent-consent-engine-a-framework-for-decentralized-decision-making}{%
-\subsubsection{AI Multi-Agent Consent Engine: A Framework for
-Decentralized Decision
-Making}\label{ai-multi-agent-consent-engine-a-framework-for-decentralized-decision-making}}
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{hyperref} 
+\usepackage{amssymb}
 
-This is a new vertson of
-\href{https://github.com/jucasoliveira/settlementIO}{settlementIO}
+\title{AI Multi-Agent Consent Engine: A Framework for
+Decentralized Decision
+Making}
+\author{Lucas Oliveira}
+\date{January 2024}
+
+\begin{document}
+
+\maketitle
+
+
+This is a new version of \href{https://github.com/jucasoliveira/settlementIO}{settlementIO}
 
 \hypertarget{introduction}{%
-\subsubsection{1. Introduction}\label{introduction}}
+\section*{Introduction}\label{introduction}}
 
 In an era where decision-making processes increasingly intersect with
 technological advancements, the integration of Artificial Intelligence
@@ -47,15 +58,14 @@ role in shaping a more efficient, fair, and transparent decision-making
 landscape in the digital age.
 
 \hypertarget{theoretical-background}{%
-\subsubsection{2. Theoretical Background}\label{theoretical-background}}
+\section*{Theoretical Background}\label{theoretical-background}}
 
 \hypertarget{ai-and-multi-agent-systems}{%
 \paragraph{AI and Multi-Agent
 Systems}\label{ai-and-multi-agent-systems}}
 
 Artificial Intelligence (AI) has evolved significantly, branching into
-various subfields, one of which is multi-agent systems (MAS)
-(\protect\hyperlink{1}{{[}1{]}}). MAS are systems composed of multiple
+various subfields, one of which is multi-agent systems (MAS) \cite{kraus2019ai}. MAS are systems composed of multiple
 interacting intelligent agents, each capable of autonomous
 decision-making. These agents can cooperate, coordinate, and negotiate
 with each other, making MAS particularly suitable for complex tasks
@@ -79,19 +89,17 @@ concepts in this domain include:
   \textbf{Distributed Consensus Algorithms:} These algorithms enable
   agents to reach an agreement on a particular state or decision in a
   distributed system. Examples include Byzantine Fault Tolerance and
-  Raft algorithms (\protect\hyperlink{2}{{[}2{]}})
-  (\protect\hyperlink{3}{{[}3{]}}).
+  Raft algorithms \cite{castroYear} \cite{ongaroYear}.
 \item
   \textbf{Game Theory and Mechanism Design:} These provide frameworks
   for understanding strategies in multi-agent environments. They help in
   designing systems where agents' strategies lead to desired outcomes,
   ensuring that each agent's incentives align with the overall objective
-  of the system (\protect\hyperlink{4}{{[}4{]}}).
+  of the system \cite{wangYear}.
 \item
   \textbf{Ethical AI Frameworks:} These frameworks guide the development
   of AI systems with ethical considerations in mind, ensuring that
-  decisions made by AI agents adhere to societal values and norms
-  (\protect\hyperlink{5}{{[}5{]}}).
+  decisions made by AI agents adhere to societal values and norms \cite{hogenhout2020ethical}.
 \end{itemize}
 
 \hypertarget{integration-with-decision-making-domains}{%
@@ -119,7 +127,7 @@ and adaptability to diverse contexts provides substantial opportunities
 for innovation and improvement in various fields.
 
 \hypertarget{the-importance-of-bias-a-study-approach-in-ai-multi-agent-consent-engines}{%
-\subsubsection{3. The Importance of Bias: A Study Approach in AI
+\section*{The Importance of Bias: A Study Approach in AI
 Multi-Agent Consent
 Engines}\label{the-importance-of-bias-a-study-approach-in-ai-multi-agent-consent-engines}}
 
@@ -135,7 +143,7 @@ representative consensus, especially for complex issues requiring
 diverse perspectives.
 
 For a detailed understanding of the role and mitigation of bias in AI,
-reference (\protect\hyperlink{6}{{[}6{]}}) by Emilio Ferrara provides
+reference \cite{ferrara2023fairness} by Emilio Ferrara provides
 valuable insights. This work, ``Fairness And Bias in Artificial
 Intelligence: A Brief Survey of Sources, Impacts, And Mitigation
 Strategies,'' discusses various aspects of AI bias, including its
@@ -153,51 +161,48 @@ Agents}\label{rationale-for-biased-agents}}
 \item
   \textbf{Diverse Perspectives:}
 
-  \begin{itemize}
-  \tightlist
-  \item
-    Different biases reflect varied viewpoints, ensuring the system
-    considers a wide spectrum of opinions and information.
-  \item
-    Mathematically, this is represented by a set of biases
-    \(\( B = \{b_1, b_2, ..., b_n\} \)\) and a utility function
-    \(\( U(a_i, b_j) \)\) for each agent \(\( a_i \)\) under bias
-    \(\( b_j \)\).
-  \end{itemize}
+\begin{itemize}
+\item
+  Different biases reflect varied viewpoints, ensuring the system
+  considers a wide spectrum of opinions and information.
+\item
+  Mathematically, this is represented by a set of biases
+  \( B = \{b_1, b_2, ..., b_n\} \) and a utility function
+  \( U(a_i, b_j) \) for each agent \( a_i \) under bias
+  \( b_j \).
+\end{itemize}
+
 \item
   \textbf{Customizable Decision Dynamics:}
 
   \begin{itemize}
-  \tightlist
   \item
     Customizable bias levels in agents allow organizations to tweak
     decision-making dynamics.
   \item
     Represented by a bias adjustment function
-    \(\( \beta(a_i, b_j, x) \)\).
+    \( \beta(a_i, b_j, x) \).
   \end{itemize}
 \item
   \textbf{Adaptability to Various Domains:}
 
   \begin{itemize}
-  \tightlist
   \item
     Biased agents can be tailored to suit different domains like
     finance, healthcare, or social media.
   \item
-    Domain-bias utility function \(\( U_d(a_i, b_j, d_k) \)\) assesses
-    utility in domain \(\( d_k \)\).
+    Domain-bias utility function \( U_d(a_i, b_j, d_k) \) assesses
+    utility in domain \( d_k \).
   \end{itemize}
 \item
   \textbf{Balanced Consensus:}
 
   \begin{itemize}
-  \tightlist
   \item
     Strategic balancing of biased agents for comprehensive consensus.
   \item
     Overall consensus utility is
-    \(\( U_{consensus} = \sum_{i=1}^{n} U(a_i, b_j) \)\).
+    \( U_{consensus} = \sum_{i=1}^{n} U(a_i, b_j) \).
   \end{itemize}
 \end{enumerate}
 
@@ -211,7 +216,6 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Defining Bias Types:}
 
   \begin{itemize}
-  \tightlist
   \item
     Identifying types of biases such as cultural, economic, and ethical.
   \end{itemize}
@@ -219,7 +223,6 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Agent Design:}
 
   \begin{itemize}
-  \tightlist
   \item
     Designing agents with built-in biases involves training on specific
     data sets.
@@ -228,10 +231,9 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Bias Measurement and Control:}
 
   \begin{itemize}
-  \tightlist
   \item
-    Measurement function \(\( \gamma(a_i, b_j) \)\) and control function
-    \(\( C(\gamma(a_i, b_j)) \)\).
+    Measurement function \( \gamma(a_i, b_j) \) and control function
+    \( C(\gamma(a_i, b_j)) \).
   \end{itemize}
 \end{enumerate}
 
@@ -244,16 +246,14 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Dynamic Voting Power:}
 
   \begin{itemize}
-  \tightlist
   \item
-    A function \(\( V(a_i, \gamma(a_i, b_j)) \)\) adjusts voting power
+    A function \( V(a_i, \gamma(a_i, b_j)) \) adjusts voting power
     based on measured bias.
   \end{itemize}
 \item
   \textbf{Feedback-Driven Adjustments:}
 
   \begin{itemize}
-  \tightlist
   \item
     Adjustments are made based on decision outcomes, updating biases and
     voting power.
@@ -269,7 +269,6 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Simulation and Testing:}
 
   \begin{itemize}
-  \tightlist
   \item
     Testing different biases and voting powers in various scenarios.
   \end{itemize}
@@ -277,7 +276,6 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Data Analysis:}
 
   \begin{itemize}
-  \tightlist
   \item
     Analyzing decisions to understand the impact of biases.
   \end{itemize}
@@ -285,7 +283,6 @@ Agents}\label{implementing-bias-in-agents}}
   \textbf{Continuous Learning:}
 
   \begin{itemize}
-  \tightlist
   \item
     The system learns and adapts biases and voting powers based on
     decisions.
@@ -300,7 +297,7 @@ understanding and implementing controlled biases for more effective and
 representative decision-making processes.
 
 \hypertarget{architecture-of-the-ai-consent-engine}{%
-\subsubsection{4. Architecture of the AI Consent
+\section*{Architecture of the AI Consent
 Engine}\label{architecture-of-the-ai-consent-engine}}
 
 \hypertarget{detailed-architecture-of-the-multi-agent-system}{%
@@ -368,7 +365,6 @@ The roles of agents are designed to leverage their biases effectively:
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
-\tightlist
 \item
   \textbf{Data Analyst Agents:} Analyze data through the lens of their
   specific biases, enriching the decision-making pool with diverse
@@ -396,7 +392,6 @@ comprehensive approach:
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
-\tightlist
 \item
   \textbf{Independent Biased Analysis and Decision-Making:} Each agent
   analyzes data and makes decisions based on its unique bias.
@@ -416,7 +411,7 @@ decisions are comprehensive, adaptable, and representative of multiple
 viewpoints.
 
 \hypertarget{implementing-a-punitive-feedback-loop-with-punitive-proof-of-adequacy}{%
-\subsubsection{5. Implementing a Punitive Feedback Loop with Punitive
+\section*{Implementing a Punitive Feedback Loop with Punitive
 Proof-of-Adequacy}\label{implementing-a-punitive-feedback-loop-with-punitive-proof-of-adequacy}}
 
 \hypertarget{overview-1}{%
@@ -445,7 +440,6 @@ evolves and refines over time.
   \textbf{Performance Evaluation Based on Consensus Alignment:}
 
   \begin{itemize}
-  \tightlist
   \item
     \textbf{Reward for Consensus Alignment:} Agents that are part of the
     winning side of a consensus see an increase in their voting power.
@@ -478,40 +472,36 @@ probability is employed:
   \textbf{Agent Pool and Selection Criteria:}
 
   \begin{itemize}
-  \tightlist
   \item
-    Let \(\( A \)\) represent the set of all available agents.
+    Let \( A \) represent the set of all available agents.
   \item
-    Agents for a task \(\( R \)\) are selected as
-    \[\( R = \{ a_i \in A \mid 1 \leq i \leq n \} \)\], with \(\( n \)\)
-    being the total number of agents and \[\( |R| = n \)\]
+    Agents for a task \( R \) are selected as
+    \[ R = \{ a_i \in A \mid 1 \leq i \leq n \} \], with \( n \)
+    being the total number of agents and \( |R| = n \)
   \end{itemize}
 \item
   \textbf{Ensuring an Odd Number of Agents:}
 
   \begin{itemize}
-  \tightlist
   \item
-    The number of agents, \(\( n \)\), is set as \[\( n = 2k + 1 \)\],
-    where \(\( k \)\) is an integer, to always have an odd number.
+    The number of agents, \( n \), is set as \[\ n = 2k + 1 \],
+    where \( k \) is an integer, to always have an odd number.
   \end{itemize}
 \item
   \textbf{Randomized and Criteria-Based Assignment:}
 
   \begin{itemize}
-  \tightlist
   \item
-    The selection probability of an agent \(\( a_i \)\) is denoted as
-    \(\( P(a_i) \)\), influenced by reputation, position in the
+    The selection probability of an agent \( a_i \) is denoted as
+    \( P(a_i) \), influenced by reputation, position in the
     assignment pool, and waiting time.
   \end{itemize}
 \item
   \textbf{Assignment Ordination Based on Criteria:}
 
   \begin{itemize}
-  \tightlist
   \item
-    A scoring function \[\( f: A \rightarrow \mathbb{R} \)\] orders
+    A scoring function \( f: A \rightarrow \mathbb{R} \) orders
     agents in the pool. Agents with higher scores, reflecting their
     suitability based on the criteria, are prioritized for selection.
   \end{itemize}
@@ -530,7 +520,6 @@ balanced and representative consensus outcomes.
   \textbf{Decision Execution and Outcome Assessment:}
 
   \begin{itemize}
-  \tightlist
   \item
     The system conducts a post-decision analysis to identify which
     agents were aligned with the consensus and which were not. This
@@ -541,23 +530,22 @@ balanced and representative consensus outcomes.
   \textbf{Voting Power Adjustment Mechanism:}
 
   \begin{itemize}
-  \tightlist
   \item
     \textbf{Performance Evaluation Function:} A function
-    \[\( e: R \rightarrow [0, 1] \)\] evaluates the performance of each
-    agent based on their decision accuracy and alignment with the
-    consensus.
+\[ e: R \rightarrow [0, 1] \] evaluates the performance of each
+agent based on their decision accuracy and alignment with the
+consensus.
+
   \item
     \textbf{Dynamic Voting Power Adjustment:} The voting power of each
-    agent is recalibrated using the function \[\( v(a_i, e(a_i)) \)\],
+    agent it is recalibrated using the function \[ v(a_i, e(a_i)) \],
     adjusting the influence of each agent in future decisions based on
-    their performance score \(\( e(a_i) \)\).
+    their performance score \( e(a_i) \).
   \end{itemize}
 \item
   \textbf{Ensuring Decision Integrity:}
 
   \begin{itemize}
-  \tightlist
   \item
     The system is designed to prevent any single bias or group of agents
     from dominating the decision-making process. This is achieved by
@@ -568,7 +556,6 @@ balanced and representative consensus outcomes.
   \textbf{Feedback Loop for Continuous Improvement:}
 
   \begin{itemize}
-  \tightlist
   \item
     Agents use the outcomes and performance evaluations as feedback to
     refine their decision-making algorithms. This continuous improvement
@@ -604,7 +591,7 @@ remains adaptable, fair, and efficient, aligning with the principles of
 decentralized governance and effective dispute resolution.
 
 \hypertarget{application-scenarios-for-the-ai-multi-agent-consent-engine}{%
-\subsubsection{6. Application Scenarios for the AI Multi-Agent Consent
+\section*{Application Scenarios for the AI Multi-Agent Consent
 Engine}\label{application-scenarios-for-the-ai-multi-agent-consent-engine}}
 
 \hypertarget{content-moderation}{%
@@ -651,7 +638,7 @@ ability to handle complex, multifaceted problems make it a versatile
 tool for a wide range of applications.
 
 \hypertarget{ethical-considerations-and-transparency-in-the-ai-multi-agent-consent-engine}{%
-\subsubsection{7. Ethical Considerations and Transparency in the AI
+\section*{Ethical Considerations and Transparency in the AI
 Multi-Agent Consent
 Engine}\label{ethical-considerations-and-transparency-in-the-ai-multi-agent-consent-engine}}
 
@@ -698,7 +685,7 @@ Fairness}\label{ensuring-transparency-and-fairness}}
 \end{enumerate}
 
 \hypertarget{challenges-and-limitations}{%
-\subsubsection{8. Challenges and
+\section*{Challenges and
 Limitations}\label{challenges-and-limitations}}
 
 \hypertarget{technical-challenges}{%
@@ -710,18 +697,15 @@ Limitations}\label{challenges-and-limitations}}
   \textbf{Complexity in Multi-Agent Coordination:} Managing the
   interactions and consensus mechanisms among numerous AI agents
   presents significant technical challenges, especially in ensuring
-  synchronized and efficient decision-making.
-  (\protect\hyperlink{7}{{[}7{]}})
+  synchronized and efficient decision-making.\cite{agasheYear}
 \item
   \textbf{Scalability Issues:} As the system scales to accommodate more
   agents or more complex decision scenarios, it faces challenges in
-  maintaining performance and efficiency, also benchmarking them
-  (\protect\hyperlink{8}{{[}8{]}}).
+  maintaining performance and efficiency, also benchmarking them\cite{zhuYear}.
 \item
   \textbf{Data Privacy and Security:} Ensuring the privacy and security
   of data within a multi-agent system, where multiple entities access
-  and process information, is a critical technical hurdle
-  (\protect\hyperlink{9}{{[}9{]}}).
+  and process information, is a critical technical hurdle\cite{hallyburtonYear}.
 \end{enumerate}
 
 \hypertarget{ethical-challenges}{%
@@ -750,20 +734,20 @@ Technologies}\label{limitations-of-current-ai-technologies}}
 \item
   \textbf{Imperfect Decision-Making:} AI systems, despite advancements,
   are not infallible and can make erroneous decisions, particularly in
-  unpredictable or novel scenarios (\protect\hyperlink{10}{{[}10{]}}).
+  unpredictable or novel scenarios\cite{steyversYear}.
 \item
   \textbf{Understanding Contextual Nuances:} AI agents might struggle to
   fully comprehend the complexities and nuances of human contexts,
   impacting the suitability of decisions in certain
-  scenarios(\protect\hyperlink{10}{{[}10{]}}).
+  scenarios\cite{steyversYear}.
 \item
   \textbf{Generalization across Domains:} Adapting AI systems
   effectively across various domains with high accuracy and
-  appropriateness remains a challenge(\protect\hyperlink{10}{{[}10{]}}).
+  appropriateness remains a challenge\cite{steyversYear}.
 \end{enumerate}
 
 \hypertarget{future-directions}{%
-\subsubsection{9. Future Directions}\label{future-directions}}
+\section*{Future Directions}\label{future-directions}}
 
 \hypertarget{potential-advancements-in-ai-impacting-the-consent-engine}{%
 \paragraph{Potential Advancements in AI Impacting the Consent
@@ -812,77 +796,13 @@ Development}\label{suggestions-for-research-and-development}}
 \end{enumerate}
 
 \hypertarget{conclusion}{%
-\subsubsection{10. Conclusion}\label{conclusion}}
+\section*{Conclusion}\label{conclusion}}
 
 Study in progress.
 
-\hypertarget{references}{%
-\subsubsection{11. References}\label{references}}
+\bibliographystyle{plain}
+\bibliography{reference}
 
-\begin{itemize}
-\item
-  {[}1{]} Kraus, S., Azaria, A., Fiosina, J., Greve, M., Hazon, N.,
-  Kolbe, L., Lembcke, T.-B., Müller, J. P., Schleibaum, S., \& Vollrath,
-  M. (2019). \href{https://arxiv.org/pdf/1910.04404.pdf}{AI for
-  Explaining Decisions in Multi-Agent Environments}. Department of
-  Computer Science, Bar-Ilan University, Israel; Department of Computer
-  Science, Ariel University, Israel; Department of Informatics, TU
-  Clausthal, Germany; Chair of Information Management,
-  Georg-August-Universität Göttingen, Germany; Chair of Engineering and
-  Traffic Psychology, TU Braunschweig, Germany.
-\item
-  {[}2{]} Castro, M., \& Liskov, B. (Year). Practical Byzantine Fault
-  Tolerance. Laboratory for Computer Science, Massachusetts Institute of
-  Technology, Cambridge, MA. {[}castro,liskov@lcs.mit.edu{]} .
-  \href{https://www.scs.stanford.edu/nyu/03sp/sched/bfs.pdf}{Practical
-  Byzantine Fault Tolerance}
-\item
-  {[}3{]} Ongaro, D., \& Ousterhout, J. (Year). In Search of an
-  Understandable Consensus Algorithm (Extended Version). Stanford
-  University. \href{https://raft.github.io/raft.pdf}{In Search of an
-  Understandable Consensus Algorithm (Extended Version)}
-\item
-  {[}4{]} Wang, X., Wang, J., Chen, J., Yang, Y., Kong, L., Liu, X.,
-  Jia, L., \& Xu, Y. (Year). A Game-Theoretic Learning Framework for
-  Multi-Agent Intelligent Wireless Networks. IEEE.
-  \href{https://arxiv.org/pdf/1812.01267v2.pdf}{A Game-Theoretic
-  Learning Framework for Multi-Agent Intelligent Wireless Networks}
-\item
-  {[}5{]} Hogenhout, L. (2020). Ethical AI. Stanford University.
-  \href{https://arxiv.org/pdf/2104.12547.pdf}{A Framework for Ethical AI
-  at the United Nations}
-\item
-  {[}6{]} Ferrara, E. (2023). Fairness And Bias in Artificial
-  Intelligence: A Brief Survey of Sources, Impacts, And Mitigation
-  Strategies. \href{https://arxiv.org/pdf/2304.07683v1.pdf}{Fairness And
-  Bias in Artificial Intelligence}
-\item
-  {[}7{]} Agashe, S., Fan, Y., \& Wang, X. E. (Year).
-  \href{https://arxiv.org/pdf/2310.03903.pdf}{Evaluating Multi-Agent
-  Coordination Abilities in Large Language Models}. University of
-  California, Santa Cruz. {[}saagashe@ucsc.edu, yfan71@ucsc.edu{]}
-\item
-  {[}8{]} Zhu, L., Wang, X., \& Wang, X. (Year).
-  \href{https://arxiv.org/pdf/2310.17631.pdf}{JudgeLM: Fine-Tuned Large
-  Language Models are Scalable Judges}. Beijing Academy of Artificial
-  Intelligence; School of EIC, Huazhong University of Science \&
-  Technology. \href{https://github.com/baaivision/JudgeLM}{repo}
-\item
-  {[}9{]} Hallyburton, R. S., Hunt, D., Luo, S., \& Pajic, M. (Year).
-  \href{https://arxiv.org/pdf/2401.09387.pdf}{A Multi-Agent Security
-  Testbed for the Analysis of Attacks and Defenses in Collaborative
-  Sensor Fusion. Duke University}. {[}spencer.hallyburton@duke.edu,
-  david.hunt@duke.edu, shaocheng.luo@duke.edu,
-  miroslav.pajic@duke.edu{]}
-\item
-  {[}10{]} Steyvers, M., \& Kumar, A. (Year).
-  \href{https://journals.sagepub.com/doi/full/10.1177/17456916231181102}{Three
-  Challenges for AI-Assisted Decision-Making}.
-\item
-  {[}11{]} Kaddour, J., Harris, J., Mozes, M., Bradley, H., Raileanu,
-  R., \& McHardy, R. (Year).
-  \href{https://arxiv.org/pdf/2307.10169.pdf}{Challenges and
-  Applications of Large Language Models}. University College London; UK
-  Health Security Agency; EleutherAI; University of Cambridge; Stability
-  AI; Meta AI Research; InstaDeep.
-\end{itemize}
+
+
+\end{document}
