@@ -1,4 +1,4 @@
-### AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making\*\*
+### AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making
 
 This is a new vertson of [settlementIO](https://github.com/jucasoliveira/settlementIO)
 
@@ -41,6 +41,8 @@ The implementation of AI multi-agent consent engines presents both challenges an
 #### Overview
 
 In the realm of AI multi-agent consent engines, the concept of 'bias' is often perceived negatively. However, this study proposes a paradigm shift: leveraging controlled bias within agents as a strategic asset to enhance the decision-making process. By intentionally incorporating varied biases into different agents, we can achieve a more nuanced and representative consensus, especially for complex issues requiring diverse perspectives.
+
+For a detailed understanding of the role and mitigation of bias in AI, reference ([[6]](#6)) by Emilio Ferrara provides valuable insights. This work, "Fairness And Bias in Artificial Intelligence: A Brief Survey of Sources, Impacts, And Mitigation Strategies," discusses various aspects of AI bias, including its sources, societal impacts, and potential mitigation strategies. It emphasizes the need for ethical considerations and interdisciplinary approaches to address bias in AI systems, particularly in multi-agent environments.
 
 #### Rationale for Biased Agents
 
@@ -220,7 +222,7 @@ By implementing this punitive feedback loop with dynamic voting power adjustment
 
 ### 10. References
 
-- <a id="1">[1]</a> Kraus, S., Azaria, A., Fiosina, J., Greve, M., Hazon, N., Kolbe, L., Lembcke, T.-B., Müller, J. P., Schleibaum, S., & Vollrath, M. (2019). [AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making](https://arxiv.org/pdf/1910.04404.pdf). Department of Computer Science, Bar-Ilan University, Israel; Department of Computer Science, Ariel University, Israel; Department of Informatics, TU Clausthal, Germany; Chair of Information Management, Georg-August-Universität Göttingen, Germany; Chair of Engineering and Traffic Psychology, TU Braunschweig, Germany.
+- <a id="1">[1]</a> Kraus, S., Azaria, A., Fiosina, J., Greve, M., Hazon, N., Kolbe, L., Lembcke, T.-B., Müller, J. P., Schleibaum, S., & Vollrath, M. (2019). [AI for Explaining Decisions in Multi-Agent Environments](https://arxiv.org/pdf/1910.04404.pdf). Department of Computer Science, Bar-Ilan University, Israel; Department of Computer Science, Ariel University, Israel; Department of Informatics, TU Clausthal, Germany; Chair of Information Management, Georg-August-Universität Göttingen, Germany; Chair of Engineering and Traffic Psychology, TU Braunschweig, Germany.
 
 - <a id="2">[2]</a> Castro, M., & Liskov, B. (Year). Practical Byzantine Fault Tolerance. Laboratory for Computer Science, Massachusetts Institute of Technology, Cambridge, MA. [castro,liskov@lcs.mit.edu] . [Practical Byzantine Fault Tolerance](https://www.scs.stanford.edu/nyu/03sp/sched/bfs.pdf)
 
@@ -230,3 +232,5 @@ By implementing this punitive feedback loop with dynamic voting power adjustment
 - <a id="4">[4]</a> Wang, X., Wang, J., Chen, J., Yang, Y., Kong, L., Liu, X., Jia, L., & Xu, Y. (Year). A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks. IEEE. [A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks](https://arxiv.org/pdf/1812.01267v2.pdf)
 
 - <a id="5">[5]</a> Hogenhout, L. (2020). Ethical AI. Stanford University. [A Framework for Ethical AI at the United Nations](https://arxiv.org/pdf/2104.12547.pdf)
+
+- <a id="6">[6]</a> Ferrara, E. (2023). Fairness And Bias in Artificial Intelligence: A Brief Survey of Sources, Impacts, And Mitigation Strategies. [Fairness And Bias in Artificial Intelligence](https://arxiv.org/pdf/2304.07683v1.pdf)
