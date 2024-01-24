@@ -1,5 +1,7 @@
 ### AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making\*\*
 
+This is a new vertson of [settlementIO](https://github.com/jucasoliveira/settlementIO)
+
 ### 1. Introduction
 
 In an era where decision-making processes increasingly intersect with technological advancements, the integration of Artificial Intelligence (AI) in these processes has become not just a possibility, but a necessity. The concept of an AI multi-agent consent engine represents a transformative step in this direction, offering a sophisticated framework for decentralized decision-making across various domains. This document aims to elucidate the design, functionality, and potential applications of such an engine, particularly in contexts that demand nuanced and collective decision-making capabilities, like content moderation and law voting.
