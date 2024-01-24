@@ -26,7 +26,7 @@ Consent in AI refers to the process by which AI agents make collective decisions
 
 - **Game Theory and Mechanism Design:** These provide frameworks for understanding strategies in multi-agent environments. They help in designing systems where agents' strategies lead to desired outcomes, ensuring that each agent's incentives align with the overall objective of the system ([[4]](#4)).
 
-- **Ethical AI Frameworks:** These frameworks guide the development of AI systems with ethical considerations in mind, ensuring that decisions made by AI agents adhere to societal values and norms (see reference 5).
+- **Ethical AI Frameworks:** These frameworks guide the development of AI systems with ethical considerations in mind, ensuring that decisions made by AI agents adhere to societal values and norms ([[5]](#5)).
 
 #### Integration with Decision-Making Domains
 
