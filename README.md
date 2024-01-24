@@ -1,4 +1,8 @@
-### AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making
+# StlMnt.
+
+![](https://www.warpy.io/_next/static/media/stlmnt_icon.b410a410.svg)
+
+## AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making
 
 This is a new vertson of [settlementIO](https://github.com/jucasoliveira/settlementIO)
 
