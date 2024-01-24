@@ -16,15 +16,15 @@ This document outlines the theoretical underpinnings, architectural design, and 
 
 #### AI and Multi-Agent Systems
 
-Artificial Intelligence (AI) has evolved significantly, branching into various subfields, one of which is multi-agent systems (MAS) (see reference 1). MAS are systems composed of multiple interacting intelligent agents, each capable of autonomous decision-making. These agents can cooperate, coordinate, and negotiate with each other, making MAS particularly suitable for complex tasks requiring collective intelligence. In the context of the AI consent engine, MAS offer a robust framework for distributed decision-making, where each agent's contribution enhances the system's overall effectiveness and reliability.
+Artificial Intelligence (AI) has evolved significantly, branching into various subfields, one of which is multi-agent systems (MAS) ([[1]](#1)). MAS are systems composed of multiple interacting intelligent agents, each capable of autonomous decision-making. These agents can cooperate, coordinate, and negotiate with each other, making MAS particularly suitable for complex tasks requiring collective intelligence. In the context of the AI consent engine, MAS offer a robust framework for distributed decision-making, where each agent's contribution enhances the system's overall effectiveness and reliability.
 
 #### Consent and Decision-Making Models in AI
 
 Consent in AI refers to the process by which AI agents make collective decisions. This involves models and algorithms that allow for consensus-building among agents, ensuring that decisions reflect the collective input rather than individual biases or limitations. Key concepts in this domain include:
 
-- **Distributed Consensus Algorithms:** These algorithms enable agents to reach an agreement on a particular state or decision in a distributed system. Examples include Byzantine Fault Tolerance and Raft algorithms (see reference 2 and 3).
+- **Distributed Consensus Algorithms:** These algorithms enable agents to reach an agreement on a particular state or decision in a distributed system. Examples include Byzantine Fault Tolerance and Raft algorithms ([[2]](#2)) ([[3]](#3)).
 
-- **Game Theory and Mechanism Design:** These provide frameworks for understanding strategies in multi-agent environments. They help in designing systems where agents' strategies lead to desired outcomes, ensuring that each agent's incentives align with the overall objective of the system (see reference 4).
+- **Game Theory and Mechanism Design:** These provide frameworks for understanding strategies in multi-agent environments. They help in designing systems where agents' strategies lead to desired outcomes, ensuring that each agent's incentives align with the overall objective of the system ([[4]](#4)).
 
 - **Ethical AI Frameworks:** These frameworks guide the development of AI systems with ethical considerations in mind, ensuring that decisions made by AI agents adhere to societal values and norms (see reference 5).
 
@@ -220,13 +220,13 @@ By implementing this punitive feedback loop with dynamic voting power adjustment
 
 ### 10. References
 
-- [1] Kraus, S., Azaria, A., Fiosina, J., Greve, M., Hazon, N., Kolbe, L., Lembcke, T.-B., Müller, J. P., Schleibaum, S., & Vollrath, M. (2019). [AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making](https://arxiv.org/pdf/1910.04404.pdf). Department of Computer Science, Bar-Ilan University, Israel; Department of Computer Science, Ariel University, Israel; Department of Informatics, TU Clausthal, Germany; Chair of Information Management, Georg-August-Universität Göttingen, Germany; Chair of Engineering and Traffic Psychology, TU Braunschweig, Germany.
+- <a id="1">[1]</a> Kraus, S., Azaria, A., Fiosina, J., Greve, M., Hazon, N., Kolbe, L., Lembcke, T.-B., Müller, J. P., Schleibaum, S., & Vollrath, M. (2019). [AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making](https://arxiv.org/pdf/1910.04404.pdf). Department of Computer Science, Bar-Ilan University, Israel; Department of Computer Science, Ariel University, Israel; Department of Informatics, TU Clausthal, Germany; Chair of Information Management, Georg-August-Universität Göttingen, Germany; Chair of Engineering and Traffic Psychology, TU Braunschweig, Germany.
 
-- [2] Castro, M., & Liskov, B. (Year). Practical Byzantine Fault Tolerance. Laboratory for Computer Science, Massachusetts Institute of Technology, Cambridge, MA. [castro,liskov@lcs.mit.edu] . [Practical Byzantine Fault Tolerance](https://www.scs.stanford.edu/nyu/03sp/sched/bfs.pdf)
+- <a id="2">[2]</a> Castro, M., & Liskov, B. (Year). Practical Byzantine Fault Tolerance. Laboratory for Computer Science, Massachusetts Institute of Technology, Cambridge, MA. [castro,liskov@lcs.mit.edu] . [Practical Byzantine Fault Tolerance](https://www.scs.stanford.edu/nyu/03sp/sched/bfs.pdf)
 
-- [3] Ongaro, D., & Ousterhout, J. (Year). In Search of an Understandable Consensus Algorithm (Extended Version). Stanford University. [In Search of an Understandable Consensus Algorithm
+- <a id="3">[3]</a> Ongaro, D., & Ousterhout, J. (Year). In Search of an Understandable Consensus Algorithm (Extended Version). Stanford University. [In Search of an Understandable Consensus Algorithm
   (Extended Version)](https://raft.github.io/raft.pdf)
 
-- [4] Wang, X., Wang, J., Chen, J., Yang, Y., Kong, L., Liu, X., Jia, L., & Xu, Y. (Year). A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks. IEEE. [A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks](https://arxiv.org/pdf/1812.01267v2.pdf)
+- <a id="4">[4]</a> Wang, X., Wang, J., Chen, J., Yang, Y., Kong, L., Liu, X., Jia, L., & Xu, Y. (Year). A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks. IEEE. [A Game-Theoretic Learning Framework for Multi-Agent Intelligent Wireless Networks](https://arxiv.org/pdf/1812.01267v2.pdf)
 
-- [5] Hogenhout, L. (2020). Ethical AI. Stanford University. [A Framework for Ethical AI at the United Nations](https://arxiv.org/pdf/2104.12547.pdf)
+- <a id="5">[5]</a> Hogenhout, L. (2020). Ethical AI. Stanford University. [A Framework for Ethical AI at the United Nations](https://arxiv.org/pdf/2104.12547.pdf)
