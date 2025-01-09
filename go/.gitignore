@@ -1,0 +1,20 @@
+# Environment variables
+.env
+.env.example
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build output
+/bin/
+/pkg/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo 
