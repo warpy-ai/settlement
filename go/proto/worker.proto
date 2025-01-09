@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package worker;
+option go_package = "settlement-core/proto";
+
+service WorkerService {
+  rpc ProcessTask (TaskRequest) returns (stream TaskResponse) {}
+}
+
+message TaskRequest {
+  string task_id = 1;
+  string content = 2;
+  string api_key = 3;
+}
+
+message TaskResponse {
+  string task_id = 1;
+  string result = 2;
+  string error = 3;
+  WorkerStatus status = 4;
+}
+
+enum WorkerStatus {
+  UNKNOWN = 0;
+  PROCESSING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+} 
