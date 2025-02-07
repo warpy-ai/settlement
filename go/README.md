@@ -72,6 +72,7 @@ go/
 ```bash
 # Install Protocol Buffers compiler
 brew install protobuf
+brew install protoc-gen-go
 
 # Install Go gRPC tools
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
@@ -121,6 +122,8 @@ protoc --go_out=proto/gen --go_opt=paths=source_relative \
        --go-grpc_out=proto/gen --go-grpc_opt=paths=source_relative \
        proto/worker.proto
 ```
+
+if you want to generate the code automatically, you can use the script `scripts/genproc.sh`
 
 ### 5. Environment Setup
 

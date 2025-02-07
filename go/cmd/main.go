@@ -37,7 +37,7 @@ func main() {
 	}
 
 	// Create a supervisor with 3 workers
-	supervisor := core.NewSupervisor(3, apiKey)
+	supervisor := core.NewSupervisor(7, apiKey)
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -53,6 +53,8 @@ func main() {
 		"Generate a list of 5 popular programming languages in 2024.",
 		"What is the capital of France?",
 		"Calculate 15% of 85.",
+		"What is the capital of Germany?",
+		"Calculate 10% of 85.",
 	}
 
 	// Submit tasks with delay between submissions
