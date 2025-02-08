@@ -405,7 +405,7 @@ func (s *Supervisor) Close() {
 	close(s.tasks)
 
 	// Create shutdown context with timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // Increased timeout
 	defer cancel()
 
 	// Wait for tasks to complete with timeout
@@ -413,13 +413,25 @@ func (s *Supervisor) Close() {
 	go func() {
 		defer close(shutdownComplete)
 
-		// Wait for all workers to finish current tasks
+		// Wait for all tasks to complete
 		for {
+			s.taskStatus.mu.Lock()
+			completed := s.taskStatus.Completed
+			total := s.taskStatus.Total
+			s.taskStatus.mu.Unlock()
+
+			if completed >= total {
+				log.Printf("[Supervisor] All tasks completed successfully (%d/%d)",
+					completed, total)
+				return
+			}
+
+			// Check busy workers
 			s.mu.RLock()
 			busyWorkers := 0
-			for _, worker := range s.workers {
+			for i, worker := range s.workers {
 				if worker.conn != nil {
-					state, err := s.poolManager.GetWorkerStatus(fmt.Sprintf("worker-%d", busyWorkers+1))
+					state, err := s.poolManager.GetWorkerStatus(fmt.Sprintf("worker-%d", i+1))
 					if err == nil && state == "busy" {
 						busyWorkers++
 					}
@@ -427,22 +439,20 @@ func (s *Supervisor) Close() {
 			}
 			s.mu.RUnlock()
 
-			if busyWorkers == 0 {
-				log.Printf("[Supervisor] All workers completed their tasks")
-				return
+			log.Printf("[Supervisor] Waiting for tasks to complete (%d/%d), busy workers: %d",
+				completed, total, busyWorkers)
+
+			if busyWorkers == 0 && completed < total {
+				// If no workers are busy but tasks are incomplete, something might be wrong
+				log.Printf("[Supervisor] No busy workers but tasks incomplete (%d/%d), checking queue manager",
+					completed, total)
+
+				// Give queue manager a chance to retry
+				time.Sleep(time.Second * 5)
+				continue
 			}
 
-			// Check task completion
-			s.taskStatus.mu.Lock()
-			if s.taskStatus.Completed >= s.taskStatus.Total {
-				s.taskStatus.mu.Unlock()
-				log.Printf("[Supervisor] All tasks completed successfully (%d/%d)",
-					s.taskStatus.Completed, s.taskStatus.Total)
-				return
-			}
-			s.taskStatus.mu.Unlock()
-
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(time.Second)
 		}
 	}()
 

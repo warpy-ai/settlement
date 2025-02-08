@@ -109,13 +109,20 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	ctx, cancel := context.WithTimeout(context.Background(), instruction.Consensus.TimeoutDuration)
 	defer cancel()
 
-	// Get unused workers
+	// Get unused workers with exponential backoff
 	var workers []*WorkerState
-	for retries := 0; retries < 5; retries++ {
+	maxAttempts := 10
+	baseDelay := time.Second
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		availableWorkers, getErr := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
 		if getErr != nil {
-			log.Printf("[QueueManager] Attempt %d: Failed to get workers: %v", retries+1, getErr)
-			time.Sleep(time.Second * 2)
+			delay := time.Duration(1<<uint(attempt)) * baseDelay
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+			log.Printf("[QueueManager] Attempt %d: Failed to get workers: %v, retrying in %v...",
+				attempt+1, getErr, delay)
+			time.Sleep(delay)
 			continue
 		}
 
@@ -138,12 +145,27 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			break
 		}
 
-		log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), retrying...",
-			len(workers), instruction.WorkerCount)
-		time.Sleep(time.Second * 2)
+		delay := time.Duration(1<<uint(attempt)) * baseDelay
+		if delay > 10*time.Second {
+			delay = 10 * time.Second
+		}
+		log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), retrying in %v...",
+			len(workers), instruction.WorkerCount, delay)
+		time.Sleep(delay)
 	}
 
 	if len(workers) < instruction.WorkerCount {
+		if currentWorkers := len(qm.supervisor.workers); currentWorkers < qm.supervisor.maxWorkers {
+			newWorkerCount := min(currentWorkers+2, qm.supervisor.maxWorkers)
+			if err := qm.supervisor.scaleWorkers(ctx, newWorkerCount); err != nil {
+				log.Printf("[QueueManager] Failed to scale workers: %v", err)
+			} else {
+				log.Printf("[QueueManager] Scaled workers from %d to %d for retry", currentWorkers, newWorkerCount)
+				// Give workers time to initialize
+				time.Sleep(time.Second * 2)
+				return false
+			}
+		}
 		return false
 	}
 
@@ -151,6 +173,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	qm.mu.Lock()
 	for _, w := range workers {
 		qm.retryHistory[instruction.TaskID][w.ID] = true
+		qm.poolManager.UpdateWorkerStatus(w.ID, "busy")
 	}
 	qm.mu.Unlock()
 
@@ -165,8 +188,6 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			defer func() {
 				qm.poolManager.UpdateWorkerStatus(w.ID, "available")
 			}()
-
-			qm.poolManager.UpdateWorkerStatus(w.ID, "busy")
 
 			result, err := qm.processTaskWithWorker(ctx, instruction, w)
 			if err != nil {
@@ -275,6 +296,91 @@ func (qm *QueueManager) processTaskWithWorker(ctx context.Context, instruction *
 	}
 }
 
+// normalizeText removes punctuation, extra spaces, and converts to lowercase
+func normalizeText(text string) string {
+	// Convert to lowercase
+	text = strings.ToLower(text)
+
+	// Remove punctuation and extra spaces
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsPunct(r) {
+			return ' '
+		}
+		return r
+	}, text)
+
+	// Split into words and remove common words that don't affect meaning
+	words := strings.Fields(text)
+	filtered := make([]string, 0, len(words))
+	stopWords := map[string]bool{
+		"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
+		"be": true, "by": true, "for": true, "in": true, "is": true, "it": true,
+		"of": true, "on": true, "or": true, "that": true, "the": true, "this": true,
+		"to": true, "was": true, "were": true, "will": true, "with": true,
+	}
+
+	for _, word := range words {
+		if !stopWords[word] {
+			filtered = append(filtered, word)
+		}
+	}
+
+	return strings.Join(filtered, " ")
+}
+
+// calculateSimilarity returns a similarity score between 0 and 1
+func calculateSimilarity(text1, text2 string) float64 {
+	words1 := strings.Fields(text1)
+	words2 := strings.Fields(text2)
+
+	// Create word frequency maps
+	freq1 := make(map[string]int)
+	freq2 := make(map[string]int)
+
+	for _, word := range words1 {
+		freq1[word]++
+	}
+	for _, word := range words2 {
+		freq2[word]++
+	}
+
+	// Calculate intersection and union using word frequencies
+	intersection := 0.0
+	union := 0.0
+
+	// Count intersection
+	for word, count1 := range freq1 {
+		if count2, exists := freq2[word]; exists {
+			intersection += float64(min(count1, count2))
+		}
+		union += float64(count1)
+	}
+
+	// Add remaining words from freq2 to union
+	for word, count2 := range freq2 {
+		if _, exists := freq1[word]; !exists {
+			union += float64(count2)
+		}
+	}
+
+	if union == 0 {
+		return 1.0
+	}
+
+	// Weight longer matches more heavily
+	lengthFactor := float64(min(len(words1), len(words2))) / float64(max(len(words1), len(words2)))
+	similarity := (intersection / union) * (0.7 + 0.3*lengthFactor)
+
+	return similarity
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // checkConsensus determines if workers have reached consensus on a task
 func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) {
 	qm.mu.RLock()
@@ -292,10 +398,12 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 		confidence  float64
 		rateLimited bool
 	}
+
 	groups := make(map[string]*consensusGroup)
 	totalVotingPower := 0.0
 	rateLimitedCount := 0
 
+	// First pass: Create initial groups
 	for _, result := range results {
 		if result.Response == nil {
 			continue
@@ -320,7 +428,7 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 			for existingKey := range groups {
 				existingValue, _ := parseNumericValue(existingKey)
 				if math.Abs(value-existingValue) <= instruction.Consensus.NumericTolerance {
-					key = existingKey // Use existing key to group similar values
+					key = existingKey
 					found = true
 					break
 				}
@@ -330,19 +438,19 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 			}
 
 		case SemanticMatch:
-			// For semantic match, normalize the text and find similar groups
+			// For semantic match, normalize and find similar groups
 			normalizedKey := normalizeText(key)
-			found := false
+			bestMatch := key
+			highestSimilarity := 0.0
+
 			for existingKey := range groups {
-				if similarity := calculateSimilarity(normalizedKey, normalizeText(existingKey)); similarity >= 0.7 { // Reduced threshold
-					key = existingKey // Use existing key to group similar responses
-					found = true
-					break
+				similarity := calculateSimilarity(normalizedKey, normalizeText(existingKey))
+				if similarity >= 0.6 && similarity > highestSimilarity { // Lowered threshold
+					bestMatch = existingKey
+					highestSimilarity = similarity
 				}
 			}
-			if !found {
-				key = result.Response.Decision
-			}
+			key = bestMatch
 		}
 
 		weightedVote := result.VotingPower * result.Response.Confidence
@@ -360,6 +468,34 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 		totalVotingPower += result.VotingPower
 	}
 
+	// Second pass: Merge very similar groups
+	if instruction.Consensus.MatchStrategy == SemanticMatch {
+		merged := true
+		for merged {
+			merged = false
+			for key1, group1 := range groups {
+				for key2, group2 := range groups {
+					if key1 == key2 {
+						continue
+					}
+					if similarity := calculateSimilarity(normalizeText(key1), normalizeText(key2)); similarity >= 0.8 {
+						// Merge group2 into group1
+						group1.totalVotes += group2.totalVotes
+						group1.responses = append(group1.responses, group2.responses...)
+						group1.confidence = (group1.confidence*float64(len(group1.responses)-len(group2.responses)) +
+							group2.confidence*float64(len(group2.responses))) / float64(len(group1.responses))
+						delete(groups, key2)
+						merged = true
+						break
+					}
+				}
+				if merged {
+					break
+				}
+			}
+		}
+	}
+
 	// If too many rate limits, return false to retry
 	if float64(rateLimitedCount)/float64(len(results)) > 0.5 {
 		log.Printf("[QueueManager] Too many rate limited responses (%d/%d), will retry",
@@ -371,6 +507,7 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 	var bestResult string
 	var highestVotes float64
 	var bestGroup *consensusGroup
+	var secondHighestVotes float64
 
 	for decision, group := range groups {
 		weightedVotes := group.totalVotes / totalVotingPower
@@ -378,32 +515,42 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 			decision, weightedVotes*100, group.confidence)
 
 		if weightedVotes > highestVotes {
+			secondHighestVotes = highestVotes
 			highestVotes = weightedVotes
 			bestResult = decision
 			bestGroup = group
+		} else if weightedVotes > secondHighestVotes {
+			secondHighestVotes = weightedVotes
 		}
 	}
+
+	// Check if the highest vote percentage is significantly higher than the second highest
+	// This ensures we have a clear winner
+	voteDifference := highestVotes - secondHighestVotes
+	hasSignificantLead := voteDifference >= 0.1 // At least 10% higher than the next best
 
 	// Adjust minimum agreement based on number of groups
 	adjustedMinAgreement := instruction.Consensus.MinimumAgreement
 	if len(groups) > 2 {
-		// Lower the threshold when there are many valid but similar answers
-		adjustedMinAgreement *= 0.8
+		// Lower the threshold when there are many similar valid answers
+		adjustedMinAgreement *= 0.6
 	}
 
-	// Check if the best result meets the minimum agreement threshold
-	if highestVotes >= adjustedMinAgreement {
+	// Accept the result if it meets the minimum agreement OR has a significant lead
+	if highestVotes >= adjustedMinAgreement || hasSignificantLead {
 		consensusResponse := &WorkerResponse{
 			Decision:   bestResult,
 			Confidence: bestGroup.confidence,
 			Category:   bestGroup.responses[0].Response.Category,
-			Reasoning:  fmt.Sprintf("Consensus reached with %.2f%% agreement among %d workers", highestVotes*100, len(bestGroup.responses)),
+			Reasoning: fmt.Sprintf("Consensus reached with %.2f%% agreement among %d workers (lead: %.2f%%)",
+				highestVotes*100, len(bestGroup.responses), voteDifference*100),
 			Metadata: map[string]string{
 				"consensus_strategy":  string(instruction.Consensus.MatchStrategy),
 				"worker_count":        fmt.Sprintf("%d", len(results)),
 				"agreeing_workers":    fmt.Sprintf("%d", len(bestGroup.responses)),
 				"agreement_threshold": fmt.Sprintf("%.2f", adjustedMinAgreement),
 				"actual_agreement":    fmt.Sprintf("%.2f", highestVotes),
+				"vote_difference":     fmt.Sprintf("%.2f", voteDifference),
 				"total_groups":        fmt.Sprintf("%d", len(groups)),
 			},
 		}
@@ -442,51 +589,6 @@ func parseNumericValue(s string) (float64, error) {
 	}, s)
 
 	return strconv.ParseFloat(s, 64)
-}
-
-// normalizeText removes punctuation, extra spaces, and converts to lowercase
-func normalizeText(text string) string {
-	text = strings.ToLower(text)
-	text = strings.Map(func(r rune) rune {
-		if unicode.IsPunct(r) {
-			return ' '
-		}
-		return r
-	}, text)
-	return strings.Join(strings.Fields(text), " ")
-}
-
-// calculateSimilarity returns a similarity score between 0 and 1
-func calculateSimilarity(text1, text2 string) float64 {
-	words1 := strings.Fields(text1)
-	words2 := strings.Fields(text2)
-
-	// Create word frequency maps
-	freq1 := make(map[string]int)
-	freq2 := make(map[string]int)
-
-	for _, word := range words1 {
-		freq1[word]++
-	}
-	for _, word := range words2 {
-		freq2[word]++
-	}
-
-	// Calculate intersection
-	intersection := 0
-	for word, count1 := range freq1 {
-		if count2, exists := freq2[word]; exists {
-			intersection += min(count1, count2)
-		}
-	}
-
-	// Calculate union
-	union := len(words1) + len(words2) - intersection
-
-	if union == 0 {
-		return 1.0
-	}
-	return float64(intersection) / float64(union)
 }
 
 func min(a, b int) int {

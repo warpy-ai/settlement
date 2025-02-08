@@ -88,11 +88,17 @@ func (pm *PoolManager) UpdateWorkerStatus(workerID string, status string) error 
 		return fmt.Errorf("worker %s not found", workerID)
 	}
 
-	oldStatus := worker.Status
-	worker.Status = status
-	worker.LastHeartbeat = time.Now()
+	// Only update if status actually changes
+	if worker.Status != status {
+		oldStatus := worker.Status
+		worker.Status = status
+		worker.LastHeartbeat = time.Now()
+		log.Printf("[PoolManager] Worker %s status changed: %s -> %s", workerID, oldStatus, status)
+	} else if status == "available" {
+		// Just update heartbeat without logging
+		worker.LastHeartbeat = time.Now()
+	}
 
-	log.Printf("[PoolManager] Worker %s status changed: %s -> %s", workerID, oldStatus, status)
 	return nil
 }
 
@@ -133,10 +139,14 @@ func (pm *PoolManager) monitorWorkerHealth() {
 		pm.mu.Lock()
 		now := time.Now()
 		for id, worker := range pm.workers {
-			if worker.Status != "offline" && now.Sub(worker.LastHeartbeat) > 30*time.Second {
-				oldStatus := worker.Status
-				worker.Status = "offline"
-				log.Printf("[PoolManager] Worker %s marked as offline (was %s) due to inactivity", id, oldStatus)
+			if worker.Status != "offline" {
+				timeSinceHeartbeat := now.Sub(worker.LastHeartbeat)
+				if timeSinceHeartbeat > 30*time.Second {
+					oldStatus := worker.Status
+					worker.Status = "offline"
+					log.Printf("[PoolManager] Worker %s marked as offline (was %s) due to inactivity for %.0f seconds",
+						id, oldStatus, timeSinceHeartbeat.Seconds())
+				}
 			}
 		}
 		pm.mu.Unlock()
