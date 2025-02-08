@@ -31,35 +31,57 @@ type TaskStatus struct {
 }
 
 // Supervisor manages worker agents
+// Add these fields to your existing Supervisor struct
 type Supervisor struct {
-	workers     []workerConnection
-	workerProcs []*exec.Cmd
-	tasks       chan string
-	results     chan TaskResult
-	apiKey      string
-	numWorkers  int
-	workDir     string
-	mu          sync.RWMutex
-	wg          sync.WaitGroup
-	taskStatus  TaskStatus
+	workers      []workerConnection
+	workerProcs  []*exec.Cmd
+	tasks        chan string
+	results      chan TaskResult
+	apiKey       string
+	numWorkers   int
+	workDir      string
+	mu           sync.RWMutex
+	wg           sync.WaitGroup
+	taskStatus   TaskStatus
+	poolManager  *PoolManager
+	queueManager *QueueManager
+	maxWorkers   int // Maximum number of workers allowed
 }
 
-// NewSupervisor creates a new supervisor instance
-func NewSupervisor(numWorkers int, apiKey string) *Supervisor {
-	workDir, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("Failed to get working directory: %v", err)
+// SupervisorConfig holds configuration for the supervisor
+type SupervisorConfig struct {
+	NumWorkers int
+	MaxWorkers int // Maximum number of workers allowed
+	APIKey     string
+	WorkDir    string
+}
+
+// Update NewSupervisor function
+func NewSupervisor(config SupervisorConfig) *Supervisor {
+	if config.MaxWorkers == 0 {
+		config.MaxWorkers = 15 // Default maximum workers
 	}
 
-	return &Supervisor{
-		workers:     make([]workerConnection, numWorkers),
-		workerProcs: make([]*exec.Cmd, numWorkers),
-		tasks:       make(chan string, numWorkers*2),
-		results:     make(chan TaskResult, numWorkers*2),
-		apiKey:      apiKey,
-		numWorkers:  numWorkers,
-		workDir:     workDir,
+	poolManager := NewPoolManager()
+	queueManager := NewQueueManager(poolManager)
+
+	supervisor := &Supervisor{
+		workers:      make([]workerConnection, config.NumWorkers),
+		workerProcs:  make([]*exec.Cmd, config.NumWorkers),
+		tasks:        make(chan string, config.NumWorkers*2),
+		results:      make(chan TaskResult, config.NumWorkers*2),
+		apiKey:       config.APIKey,
+		numWorkers:   config.NumWorkers,
+		workDir:      config.WorkDir,
+		poolManager:  poolManager,
+		queueManager: queueManager,
+		maxWorkers:   config.MaxWorkers,
 	}
+
+	// Set supervisor reference in queue manager
+	queueManager.SetSupervisor(supervisor)
+
+	return supervisor
 }
 
 func (s *Supervisor) startWorkerProcess(id int) error {
@@ -242,6 +264,8 @@ func (s *Supervisor) Start(ctx context.Context) {
 			log.Printf("[Supervisor] Error starting worker %d: %v", i, err)
 			continue
 		}
+		// Register worker with pool manager
+		s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", i), 1.0)
 		// Give workers time to start
 		time.Sleep(time.Second * 2)
 	}
@@ -271,25 +295,26 @@ func (s *Supervisor) Start(ctx context.Context) {
 				}
 
 				log.Printf("[Supervisor] Successfully connected to worker %d", workerID+1)
+				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", workerID+1), "available")
 				return
 			}
 			log.Printf("[Supervisor] Failed to establish connection with worker %d after all retries", workerID+1)
+			s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", workerID+1), "offline")
 		}(i)
 	}
 
 	// Wait for all connection attempts to complete
 	connWg.Wait()
 
-	// Start task processors
-	for i := 0; i < s.numWorkers; i++ {
-		s.wg.Add(1)
-		go func(workerID int) {
-			s.processWorkerTasks(ctx, workerID)
-		}(i)
-	}
-
-	// Monitor worker processes
+	// Start monitoring workers
 	go s.monitorWorkers(ctx)
+
+	// Forward results from queue manager to supervisor results channel
+	go func() {
+		for result := range s.queueManager.GetResults() {
+			s.results <- result
+		}
+	}()
 }
 
 func (s *Supervisor) monitorWorkers(ctx context.Context) {
@@ -371,13 +396,111 @@ func (s *Supervisor) Close() {
 	}
 }
 
-// SubmitTask adds a task to the queue
+// scaleWorkers adjusts the number of workers based on demand
+func (s *Supervisor) scaleWorkers(ctx context.Context, requiredWorkers int) error {
+	s.mu.Lock()
+	currentWorkers := len(s.workers)
+	s.mu.Unlock()
+
+	if requiredWorkers <= currentWorkers {
+		return nil // No need to scale up
+	}
+
+	if requiredWorkers > s.maxWorkers {
+		return fmt.Errorf("cannot scale beyond maximum workers (%d)", s.maxWorkers)
+	}
+
+	log.Printf("[Supervisor] Scaling workers from %d to %d", currentWorkers, requiredWorkers)
+
+	// Extend the workers slice
+	s.mu.Lock()
+	newWorkers := make([]workerConnection, requiredWorkers)
+	copy(newWorkers, s.workers)
+	s.workers = newWorkers
+
+	newProcs := make([]*exec.Cmd, requiredWorkers)
+	copy(newProcs, s.workerProcs)
+	s.workerProcs = newProcs
+	s.mu.Unlock()
+
+	// Start new workers
+	var startWg sync.WaitGroup
+	for i := currentWorkers + 1; i <= requiredWorkers; i++ {
+		startWg.Add(1)
+		go func(id int) {
+			defer startWg.Done()
+
+			if err := s.startWorkerProcess(id); err != nil {
+				log.Printf("[Supervisor] Error starting worker %d: %v", id, err)
+				return
+			}
+
+			// Register worker with pool manager
+			s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", id), 1.0)
+
+			// Wait for worker to be healthy and establish connection
+			for retries := 0; retries < 10; retries++ {
+				if err := s.waitForWorkerHealth(ctx, 50051+id-1, 5); err != nil {
+					log.Printf("[Supervisor] Worker %d health check attempt %d failed: %v", id, retries+1, err)
+					time.Sleep(time.Second)
+					continue
+				}
+
+				if err := s.connectToWorker(ctx, id-1); err != nil {
+					log.Printf("[Supervisor] Worker %d connection attempt %d failed: %v", id, retries+1, err)
+					time.Sleep(time.Second)
+					continue
+				}
+
+				log.Printf("[Supervisor] Successfully connected to new worker %d", id)
+				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", id), "available")
+				return
+			}
+		}(i)
+	}
+
+	// Wait for all new workers to start
+	startWg.Wait()
+	return nil
+}
+
+// SubmitTask adds a task to the queue with consensus requirements
 func (s *Supervisor) SubmitTask(task string) {
+	// Analyze task requirements
+	ctx := context.Background()
+	requirements, err := AnalyzeTask(ctx, task, s.apiKey)
+	if err != nil {
+		log.Printf("[Supervisor] Failed to analyze task: %v", err)
+		s.results <- TaskResult{Error: fmt.Errorf("failed to analyze task: %v", err)}
+		return
+	}
+
+	// Scale workers if needed
+	if err := s.scaleWorkers(ctx, requirements.WorkerCount); err != nil {
+		log.Printf("[Supervisor] Failed to scale workers: %v", err)
+		s.results <- TaskResult{Error: fmt.Errorf("failed to scale workers: %v", err)}
+		return
+	}
+
+	instruction := &Instruction{
+		TaskID:      fmt.Sprintf("task-%d", time.Now().UnixNano()),
+		Content:     task,
+		WorkerCount: requirements.WorkerCount,
+		Consensus: ConsensusConfig{
+			MinimumAgreement: requirements.MinimumAgreement,
+			TimeoutDuration:  time.Duration(requirements.TimeoutSeconds) * time.Second,
+			VotingStrategy:   "majority",
+		},
+	}
+
+	if err := s.queueManager.AddInstruction(instruction); err != nil {
+		s.results <- TaskResult{Error: fmt.Errorf("failed to queue task: %v", err)}
+		return
+	}
+
 	s.taskStatus.mu.Lock()
 	s.taskStatus.Total++
 	s.taskStatus.mu.Unlock()
-	s.wg.Add(1)
-	s.tasks <- task
 }
 
 // GetResults provides access to the results channel

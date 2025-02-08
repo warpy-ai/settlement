@@ -36,8 +36,19 @@ func main() {
 		log.Fatal("OPENAI_API_KEY environment variable is required. Please set it in the .env file")
 	}
 
-	// Create a supervisor with 3 workers
-	supervisor := core.NewSupervisor(7, apiKey)
+	// Get current working directory for WorkDir
+	workDir, err := os.Getwd()
+	if err != nil {
+		log.Fatal("Failed to get working directory:", err)
+	}
+
+	// Create a supervisor with configuration
+	supervisor := core.NewSupervisor(core.SupervisorConfig{
+		NumWorkers: 3,  // Start with minimum workers
+		MaxWorkers: 15, // Allow scaling up to 15 workers
+		APIKey:     apiKey,
+		WorkDir:    workDir,
+	})
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -46,19 +57,28 @@ func main() {
 	// Start the supervisor
 	supervisor.Start(ctx)
 
-	// Example tasks
+	// Example tasks with varying complexity and requirements
 	tasks := []string{
-		"Translate the following text to French: 'Hello, world!'",
-		"Summarize this text: OpenAI has released new API features that enhance function calling capabilities.",
-		"Generate a list of 5 popular programming languages in 2024.",
-		"What is the capital of France?",
-		"Calculate 15% of 85.",
-		"What is the capital of Germany?",
-		"Calculate 10% of 85.",
+		// Translation tasks (medium complexity, needs verification)
+		"Translate this technical document to French: 'The quantum computer uses superposition and entanglement to perform parallel computations.'",
+		"Translate this medical text to Spanish: 'The patient exhibits symptoms of acute respiratory distress syndrome.'",
+
+		// Analysis tasks (high complexity, needs consensus)
+		"Analyze the potential impact of artificial intelligence on employment in the next decade. Provide specific examples and statistics.",
+		"Evaluate the environmental impact of electric vehicles compared to traditional combustion engines. Consider manufacturing, usage, and disposal.",
+
+		// Creative tasks (high complexity, subjective)
+		"Generate a creative story about a time traveler who discovers an ancient civilization on Mars.",
+
+		// Mathematical tasks (low complexity, needs verification)
+		"Calculate the compound interest on $10,000 invested for 5 years at 7% annual interest rate, compounded monthly.",
+
+		// Research tasks (high complexity, needs verification)
+		"Research and summarize the latest developments in fusion energy technology, focusing on breakthrough achievements in the past year.",
 	}
 
 	// Submit tasks with delay between submissions
-	log.Printf("Submitting %d tasks", len(tasks))
+	log.Printf("Submitting %d tasks for consensus processing", len(tasks))
 	for _, task := range tasks {
 		select {
 		case <-ctx.Done():
@@ -74,14 +94,14 @@ func main() {
 	}
 
 	// Close tasks channel after submitting all tasks
-	log.Println("All tasks submitted, waiting for completion")
+	log.Println("All tasks submitted, waiting for consensus results")
 	supervisor.Close()
 
 	// Collect and print results with timeout
 	successCount := 0
 	errorCount := 0
 
-	resultTimeout := time.After(2 * time.Minute)
+	resultTimeout := time.After(4 * time.Minute) // Increased timeout for complex tasks
 	resultsChan := supervisor.GetResults()
 
 	for {
@@ -98,14 +118,14 @@ func main() {
 		case result, ok := <-resultsChan:
 			if !ok {
 				// Channel closed, all results received
-				log.Println("All results received")
+				log.Println("All consensus results received")
 				goto SUMMARY
 			}
 			if result.Error != nil {
 				log.Printf("Error in task: %v", result.Error)
 				errorCount++
 			} else {
-				fmt.Printf("Result %d: %s\n", successCount+1, result.Result)
+				fmt.Printf("\nConsensus Result %d:\n%s\n", successCount+1, result.Result)
 				successCount++
 			}
 		}
@@ -113,7 +133,7 @@ func main() {
 
 SUMMARY:
 	fmt.Printf("\nTask Summary:\n")
-	fmt.Printf("Successful: %d\n", successCount)
-	fmt.Printf("Failed: %d\n", errorCount)
-	fmt.Printf("Total: %d\n", successCount+errorCount)
+	fmt.Printf("Successful consensus: %d\n", successCount)
+	fmt.Printf("Failed consensus: %d\n", errorCount)
+	fmt.Printf("Total tasks: %d\n", successCount+errorCount)
 }
