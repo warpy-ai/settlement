@@ -18,3 +18,10 @@
 .vscode/
 *.swp
 *.swo 
+
+# Supervisor
+supervisor.log
+
+# Worker logs
+worker*.log
+worker
