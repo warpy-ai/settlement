@@ -1,39 +1,92 @@
 # Multi-Agent Task Processing System
 
-A distributed system that uses gRPC and OpenAI to process tasks across multiple worker agents, coordinated by a supervisor.
+A distributed system that uses gRPC and OpenAI to process tasks across multiple worker agents, coordinated by a supervisor. The system features advanced consensus mechanisms and intelligent worker management.
 
 ## System Architecture
 
 ```
-                                   ┌─────────────┐
-                                   │             │
-                                   │ Supervisor  │
-                                   │             │
-                                   └──────┬──────┘
-                                         │
-                         ┌───────────────┼───────────────┐
-                         │               │               │
-                   ┌─────┴────┐    ┌─────┴────┐    ┌─────┴────┐
-                   │ Worker 1  │    │ Worker 2  │    │ Worker 3  │
-                   └─────┬────┘    └─────┬────┘    └─────┬────┘
-                         │               │               │
-                         └───────────────┼───────────────┘
-                                        │
-                                  ┌─────┴─────┐
-                                  │  OpenAI   │
-                                  │   API     │
-                                  └───────────┘
+                                ┌─────────────────────────────┐
+                                │         Supervisor          │
+                                │ ┌──────────┐    ┌─────────┐ │
+                                │ │   Pool   │    │  Queue  │ │
+                                │ │ Manager  │    │ Manager │ │
+                                │ └──────────┘    └─────────┘ │
+                                │        ▲            ▲       │
+                                └────────┼────────────┼───────┘
+                                         │            │
+                     ┌──────────────────────────────────────────────────────────┐
+                     │                    │                │                    │
+           ┌─────────┴────────┐ ┌─────────┴──────┐  ┌──────┴─────────┐ ┌────────┴───────┐
+           │     Worker 1     │ │    Worker 2    │  |    Worker 3    │ │    Worker N    │
+           │  ┌────────────┐  │ │  ┌──────────┐  │  |  ┌──────────┐  │ │  ┌──────────┐  │
+           │  │ gRPC Serve │  │ │  |gRPC Serv │  │  |  |gRPC Serv │  │ │  |gRPC Serv │  │
+           │  └────────────┘  │ │  └──────────┘  │  |  └──────────┘  │ │  └──────────┘  │
+           │  ┌────────────┐  │ │  ┌──────────┐  │  |  ┌──────────┐  │ │  ┌──────────┐  │
+           │  │Task Hand   │  | |  │Task Hand │  │  |  | Task Hand│  │ │  |Task Hand │  │
+           │  └────────────┘  │ │  └──────────┘  │  |  └──────────┘  │ │  └──────────┘  │
+           └────────┬─────────┘ └───────┬────────┘  └──────┬─────────┘ └────────┬───────┘
+                    │                   │                  │                     │
+                    └───────────────────┼──────────────────┼─────────────────────┘
+                                        │                  │
+                             ┌──────────┴──────────────────┴──────┐
+                             │           OpenAI API               │
+                             │  ┌─────────────────────────────┐   │
+                             │  │        GPT-4 Model          │   │
+                             │  └─────────────────────────────┘   │
+                             └────────────────────────────────────┘
+
+Features:
+- Supervisor manages worker pool and task queue
+- Workers run independently with their own gRPC servers
+- Dynamic scaling from 3 to N workers
+- Task streaming and health monitoring
+- Consensus-based result aggregation
+- Automatic worker recovery and load balancing
 ```
 
-## Features
+## Key Features
 
-- Distributed task processing with multiple workers
+### 1. Distributed Task Processing
+
+- Multiple worker nodes for parallel processing
 - gRPC-based communication
-- Health monitoring and automatic worker recovery
-- Graceful shutdown handling
-- Task progress tracking
-- OpenAI API integration
-- Concurrent task processing
+- Automatic worker scaling (3-15 workers)
+- Health monitoring and recovery
+- Task streaming and progress tracking
+
+### 2. Advanced Consensus Mechanism
+
+- Semantic similarity matching with configurable thresholds
+- Weighted voting based on worker confidence
+- Adaptive consensus thresholds
+- Multiple consensus strategies:
+  - Exact Match: For precise matches
+  - Semantic Match: For text with similar meaning
+  - Numeric Match: For calculations with tolerance
+- Group merging for similar responses
+- Confidence-weighted voting
+- Automatic threshold adjustment based on:
+  - Number of groups
+  - Response similarity
+  - Voting patterns
+
+### 3. Worker Management
+
+- Dynamic worker scaling
+- Health monitoring with heartbeats
+- Automatic recovery from failures
+- Load balancing
+- Status tracking (available, busy, offline)
+- Voting power assignment
+- Connection management
+
+### 4. Task Analysis
+
+- Automatic complexity assessment
+- Worker count determination
+- Timeout calculation
+- Match strategy selection
+- Agreement threshold adjustment
 
 ## Prerequisites
 
@@ -42,197 +95,144 @@ A distributed system that uses gRPC and OpenAI to process tasks across multiple 
 3. OpenAI API key
 4. gRPC tools
 
-## Step-by-Step Setup
+## Configuration
 
-### 1. Project Structure
-
-Create the following directory structure:
-
-```
-go/
-├── cmd/
-│   ├── main.go          # Supervisor entry point
-│   └── worker/
-│       └── main.go      # Worker entry point
-├── core/
-│   ├── supervisor.go    # Supervisor implementation
-│   ├── worker_server.go # Worker implementation
-│   ├── openai_client.go # OpenAI integration
-│   └── types.go         # Common types
-├── proto/
-│   └── worker.proto     # Protocol buffer definitions
-├── .env                 # Environment configuration
-├── .env.example         # Environment template
-├── go.mod              # Go module file
-└── README.md           # Documentation
-```
-
-### 2. Install Dependencies
-
-```bash
-# Install Protocol Buffers compiler
-brew install protobuf
-brew install protoc-gen-go
-
-# Install Go gRPC tools
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-```
-
-### 3. Protocol Buffer Definition
-
-Create `proto/worker.proto`:
-
-```protobuf
-syntax = "proto3";
-
-package worker;
-option go_package = "settlement-core/proto";
-
-service WorkerService {
-  rpc ProcessTask (TaskRequest) returns (stream TaskResponse) {}
-}
-
-message TaskRequest {
-  string task_id = 1;
-  string content = 2;
-  string api_key = 3;
-}
-
-message TaskResponse {
-  string task_id = 1;
-  string result = 2;
-  string error = 3;
-  WorkerStatus status = 4;
-}
-
-enum WorkerStatus {
-  UNKNOWN = 0;
-  PROCESSING = 1;
-  COMPLETED = 2;
-  FAILED = 3;
-}
-```
-
-### 4. Generate gRPC Code
-
-```bash
-mkdir -p proto/gen
-protoc --go_out=proto/gen --go_opt=paths=source_relative \
-       --go-grpc_out=proto/gen --go-grpc_opt=paths=source_relative \
-       proto/worker.proto
-```
-
-if you want to generate the code automatically, you can use the script `scripts/genproc.sh`
-
-### 5. Environment Setup
-
-Create `.env` file:
+### Environment Variables
 
 ```env
 OPENAI_API_KEY=your-api-key-here
 ```
 
-### 6. Implementation Steps
+### Supervisor Configuration
 
-1. **Common Types (`core/types.go`)**
-
-   - Define shared types used across the system
-   - Implement task result structures
-
-2. **OpenAI Integration (`core/openai_client.go`)**
-
-   - Implement OpenAI API client
-   - Handle API requests and responses
-
-3. **Worker Server (`core/worker_server.go`)**
-
-   - Implement gRPC service
-   - Handle task processing
-   - Manage OpenAI API calls
-
-4. **Supervisor (`core/supervisor.go`)**
-
-   - Manage worker lifecycle
-   - Handle task distribution
-   - Monitor worker health
-   - Implement graceful shutdown
-
-5. **Worker Entry Point (`cmd/worker/main.go`)**
-
-   - Set up gRPC server
-   - Initialize worker service
-   - Handle health checks
-
-6. **Main Entry Point (`cmd/main.go`)**
-   - Initialize supervisor
-   - Submit tasks
-   - Handle results
-
-## Running the System
-
-1. **Build the Project**
-
-```bash
-go mod tidy
+```go
+type SupervisorConfig struct {
+    NumWorkers int    // Initial worker count (default: 3)
+    MaxWorkers int    // Maximum workers (default: 15)
+    APIKey     string // OpenAI API key
+    WorkDir    string // Working directory
+}
 ```
 
-2. **Start the System**
+### Consensus Configuration
 
-```bash
-go run cmd/main.go
+```go
+type ConsensusConfig struct {
+    MinimumAgreement float64          // Base agreement threshold
+    TimeoutDuration  time.Duration    // Task timeout
+    VotingStrategy   string           // Voting method
+    MatchStrategy    ConsensusStrategy // Comparison method
+    NumericTolerance float64          // For numeric comparisons
+}
 ```
-
-The supervisor will:
-
-- Build the worker binary
-- Start worker processes
-- Establish connections
-- Begin processing tasks
 
 ## Task Processing Flow
 
-1. Supervisor receives tasks via `SubmitTask`
-2. Tasks are distributed to available workers
-3. Workers process tasks using OpenAI API
-4. Results are streamed back to supervisor
-5. Supervisor collects and aggregates results
+1. **Task Submission**
 
-## Monitoring and Management
+   - Task analyzed for complexity
+   - Worker count determined
+   - Consensus requirements set
 
-The system provides:
+2. **Worker Assignment**
 
-- Real-time task progress tracking
-- Worker health monitoring
-- Automatic worker recovery
-- Graceful shutdown handling
+   - Available workers selected
+   - Task distributed to workers
+   - Worker status tracked
+
+3. **Processing**
+
+   - Workers process tasks independently
+   - Results streamed back to supervisor
+   - Status updates maintained
+
+4. **Consensus Building**
+
+   - Responses grouped by similarity
+   - Weighted voting applied
+   - Groups merged when appropriate
+   - Consensus determined by:
+     - Agreement percentage
+     - Vote difference
+     - Confidence scores
+
+5. **Result Delivery**
+   - Final result selected
+   - Alternatives recorded
+   - Metadata collected
 
 ## Error Handling
 
-The system handles:
+- Worker failure recovery
+- Rate limit management
+- Timeout handling
+- Connection retry logic
+- Task reprocessing
 
-- Worker failures
-- Connection issues
-- API errors
-- Task timeouts
+## Monitoring
+
+- Worker health tracking
+- Task progress monitoring
+- Resource usage tracking
+- Status logging
+- Performance metrics
 
 ## Best Practices
 
 1. **Configuration**
 
-   - Use environment variables for sensitive data
-   - Keep API keys secure
+   - Use environment variables
+   - Secure API keys
+   - Adjust thresholds based on needs
 
-2. **Monitoring**
+2. **Scaling**
 
-   - Watch worker health
-   - Track task completion rates
+   - Start with minimum workers
+   - Scale based on load
    - Monitor resource usage
+   - Handle rate limits
 
-3. **Scaling**
-   - Adjust worker count based on load
-   - Monitor API rate limits
-   - Balance task distribution
+3. **Consensus**
+
+   - Adjust thresholds for task type
+   - Consider response similarity
+   - Balance accuracy vs. speed
+   - Monitor group formation
+
+4. **Error Handling**
+   - Implement retries
+   - Clean up resources
+   - Log failures
+   - Handle timeouts
+
+## Example Usage
+
+```go
+supervisor := core.NewSupervisor(core.SupervisorConfig{
+    NumWorkers: 3,
+    MaxWorkers: 15,
+    APIKey:     os.Getenv("OPENAI_API_KEY"),
+    WorkDir:    workDir,
+})
+
+supervisor.Start(ctx)
+
+// Submit tasks
+supervisor.SubmitTask("Analyze the impact of AI on employment...")
+supervisor.SubmitTask("Calculate the compound interest...")
+supervisor.SubmitTask("Translate this technical document...")
+
+// Collect results
+for result := range supervisor.GetResults() {
+    if result.Error != nil {
+        log.Printf("Error: %v", result.Error)
+        continue
+    }
+    fmt.Printf("Result: %s\n", result.Result)
+}
+
+supervisor.Close()
+```
 
 ## Contributing
 
