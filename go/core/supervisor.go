@@ -296,6 +296,12 @@ func (s *Supervisor) Start(ctx context.Context) {
 
 				log.Printf("[Supervisor] Successfully connected to worker %d", workerID+1)
 				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", workerID+1), "available")
+				// Start heartbeat for each worker
+				go s.workerHeartbeat(ctx, fmt.Sprintf("worker-%d", workerID+1))
+
+				// Start task processing goroutine for this worker
+				s.wg.Add(1)
+				go s.processWorkerTasks(ctx, workerID)
 				return
 			}
 			log.Printf("[Supervisor] Failed to establish connection with worker %d after all retries", workerID+1)
@@ -311,8 +317,27 @@ func (s *Supervisor) Start(ctx context.Context) {
 
 	// Forward results from queue manager to supervisor results channel
 	go func() {
-		for result := range s.queueManager.GetResults() {
-			s.results <- result
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Supervisor] Recovered from panic in result forwarding: %v", r)
+			}
+		}()
+
+		queueResults := s.queueManager.GetResults()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case result, ok := <-queueResults:
+				if !ok {
+					return
+				}
+				select {
+				case s.results <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 }
@@ -326,6 +351,7 @@ func (s *Supervisor) monitorWorkers(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.mu.Lock()
 			for i, proc := range s.workerProcs {
 				if proc == nil {
 					continue
@@ -333,11 +359,39 @@ func (s *Supervisor) monitorWorkers(ctx context.Context) {
 				// Check if process is still running
 				if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
 					log.Printf("[Supervisor] Worker %d (PID %d) died, restarting...", i+1, proc.Process.Pid)
+
+					// Clean up old worker
+					if s.workers[i].conn != nil {
+						s.workers[i].conn.Close()
+					}
+					s.workers[i] = workerConnection{}
+					s.workerProcs[i] = nil
+
+					// Start new worker
 					if err := s.startWorkerProcess(i + 1); err != nil {
 						log.Printf("[Supervisor] Failed to restart worker %d: %v", i+1, err)
+						continue
 					}
+
+					// Wait for worker to be ready
+					go func(workerID int) {
+						readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+						defer cancel()
+
+						for retries := 0; retries < 5; retries++ {
+							if err := s.waitForWorkerHealth(readyCtx, 50051+workerID, 5); err != nil {
+								continue
+							}
+							if err := s.connectToWorker(readyCtx, workerID); err != nil {
+								continue
+							}
+							s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", workerID+1), "available")
+							return
+						}
+					}(i)
 				}
 			}
+			s.mu.Unlock()
 		}
 	}
 }
@@ -346,28 +400,57 @@ func (s *Supervisor) monitorWorkers(ctx context.Context) {
 func (s *Supervisor) Close() {
 	log.Printf("[Supervisor] Initiating supervisor shutdown (completed %d/%d tasks)",
 		s.taskStatus.Completed, s.taskStatus.Total)
+
+	// Signal no more new tasks
 	close(s.tasks)
 
+	// Create shutdown context with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	// Wait for tasks to complete with timeout
-	done := make(chan struct{})
+	shutdownComplete := make(chan struct{})
 	go func() {
+		defer close(shutdownComplete)
+
+		// Wait for all workers to finish current tasks
 		for {
+			s.mu.RLock()
+			busyWorkers := 0
+			for _, worker := range s.workers {
+				if worker.conn != nil {
+					state, err := s.poolManager.GetWorkerStatus(fmt.Sprintf("worker-%d", busyWorkers+1))
+					if err == nil && state == "busy" {
+						busyWorkers++
+					}
+				}
+			}
+			s.mu.RUnlock()
+
+			if busyWorkers == 0 {
+				log.Printf("[Supervisor] All workers completed their tasks")
+				return
+			}
+
+			// Check task completion
 			s.taskStatus.mu.Lock()
 			if s.taskStatus.Completed >= s.taskStatus.Total {
 				s.taskStatus.mu.Unlock()
-				close(done)
+				log.Printf("[Supervisor] All tasks completed successfully (%d/%d)",
+					s.taskStatus.Completed, s.taskStatus.Total)
 				return
 			}
 			s.taskStatus.mu.Unlock()
+
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
+	// Wait for shutdown or timeout
 	select {
-	case <-done:
-		log.Printf("[Supervisor] All tasks completed successfully (%d/%d)",
-			s.taskStatus.Completed, s.taskStatus.Total)
-	case <-time.After(30 * time.Second):
+	case <-shutdownComplete:
+		log.Printf("[Supervisor] Graceful shutdown completed")
+	case <-shutdownCtx.Done():
 		log.Printf("[Supervisor] Shutdown timeout reached, forcing shutdown (%d/%d completed)",
 			s.taskStatus.Completed, s.taskStatus.Total)
 	}
@@ -382,86 +465,150 @@ func (s *Supervisor) Close() {
 	}
 	s.mu.Unlock()
 
-	// Close results channel
-	close(s.results)
-
-	// Terminate worker processes
+	// Terminate worker processes gracefully
 	for i, proc := range s.workerProcs {
 		if proc != nil && proc.Process != nil {
 			if err := proc.Process.Signal(syscall.SIGTERM); err != nil {
-				log.Printf("[Supervisor] Failed to terminate worker %d: %v", i+1, err)
+				log.Printf("[Supervisor] Failed to terminate worker %d gracefully: %v", i+1, err)
 				proc.Process.Kill()
 			}
+			proc.Wait()
 		}
 	}
+
+	// Close results channel after all cleanup
+	close(s.results)
 }
 
-// scaleWorkers adjusts the number of workers based on demand
-func (s *Supervisor) scaleWorkers(ctx context.Context, requiredWorkers int) error {
+// scaleWorkers adjusts the number of workers to the specified target
+func (s *Supervisor) scaleWorkers(ctx context.Context, targetWorkers int) error {
 	s.mu.Lock()
 	currentWorkers := len(s.workers)
-	s.mu.Unlock()
-
-	if requiredWorkers <= currentWorkers {
-		return nil // No need to scale up
+	if targetWorkers == currentWorkers {
+		s.mu.Unlock()
+		return nil
 	}
 
-	if requiredWorkers > s.maxWorkers {
-		return fmt.Errorf("cannot scale beyond maximum workers (%d)", s.maxWorkers)
+	log.Printf("[Supervisor] Scaling workers from %d to %d", currentWorkers, targetWorkers)
+
+	// Scale down if needed
+	if targetWorkers < currentWorkers {
+		for i := currentWorkers - 1; i >= targetWorkers; i-- {
+			if s.workers[i].conn != nil {
+				s.workers[i].conn.Close()
+			}
+			if s.workerProcs[i] != nil && s.workerProcs[i].Process != nil {
+				s.workerProcs[i].Process.Signal(syscall.SIGTERM)
+				s.workerProcs[i].Wait()
+			}
+		}
+		s.workers = s.workers[:targetWorkers]
+		s.workerProcs = s.workerProcs[:targetWorkers]
+		s.mu.Unlock()
+		return nil
 	}
 
-	log.Printf("[Supervisor] Scaling workers from %d to %d", currentWorkers, requiredWorkers)
-
-	// Extend the workers slice
-	s.mu.Lock()
-	newWorkers := make([]workerConnection, requiredWorkers)
-	copy(newWorkers, s.workers)
-	s.workers = newWorkers
-
-	newProcs := make([]*exec.Cmd, requiredWorkers)
-	copy(newProcs, s.workerProcs)
-	s.workerProcs = newProcs
+	// Prepare slices for new workers
+	s.workers = append(s.workers, make([]workerConnection, targetWorkers-currentWorkers)...)
+	s.workerProcs = append(s.workerProcs, make([]*exec.Cmd, targetWorkers-currentWorkers)...)
 	s.mu.Unlock()
 
 	// Start new workers
-	var startWg sync.WaitGroup
-	for i := currentWorkers + 1; i <= requiredWorkers; i++ {
-		startWg.Add(1)
-		go func(id int) {
-			defer startWg.Done()
+	var wg sync.WaitGroup
+	errChan := make(chan error, targetWorkers-currentWorkers)
 
-			if err := s.startWorkerProcess(id); err != nil {
-				log.Printf("[Supervisor] Error starting worker %d: %v", id, err)
+	for i := currentWorkers; i < targetWorkers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			// Start new worker process
+			if err := s.startWorkerProcess(idx + 1); err != nil {
+				errChan <- fmt.Errorf("failed to start worker %d: %v", idx+1, err)
 				return
 			}
 
-			// Register worker with pool manager
-			s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", id), 1.0)
+			// Give the worker process time to start
+			time.Sleep(time.Second)
 
-			// Wait for worker to be healthy and establish connection
+			// Wait for worker to be ready with timeout
+			readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			var connected bool
 			for retries := 0; retries < 10; retries++ {
-				if err := s.waitForWorkerHealth(ctx, 50051+id-1, 5); err != nil {
-					log.Printf("[Supervisor] Worker %d health check attempt %d failed: %v", id, retries+1, err)
+				// Check health
+				if err := s.waitForWorkerHealth(readyCtx, 50051+idx, 5); err != nil {
+					log.Printf("[Supervisor] Worker %d health check attempt %d failed: %v", idx+1, retries+1, err)
 					time.Sleep(time.Second)
 					continue
 				}
 
-				if err := s.connectToWorker(ctx, id-1); err != nil {
-					log.Printf("[Supervisor] Worker %d connection attempt %d failed: %v", id, retries+1, err)
+				// Try to connect
+				if err := s.connectToWorker(readyCtx, idx); err != nil {
+					log.Printf("[Supervisor] Worker %d connection attempt %d failed: %v", idx+1, retries+1, err)
 					time.Sleep(time.Second)
 					continue
 				}
 
-				log.Printf("[Supervisor] Successfully connected to new worker %d", id)
-				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", id), "available")
-				return
+				// Register and mark worker as available
+				s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", idx+1), 1.0)
+				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", idx+1), "available")
+				log.Printf("[Supervisor] Successfully connected to worker %d", idx+1)
+
+				// Start heartbeat goroutine for this worker
+				go s.workerHeartbeat(ctx, fmt.Sprintf("worker-%d", idx+1))
+
+				// Start task processing goroutine for this worker
+				s.wg.Add(1)
+				go s.processWorkerTasks(ctx, idx)
+
+				connected = true
+				break
+			}
+
+			if !connected {
+				errChan <- fmt.Errorf("failed to establish connection with worker %d after all retries", idx+1)
 			}
 		}(i)
 	}
 
-	// Wait for all new workers to start
-	startWg.Wait()
+	// Wait for all workers to be initialized
+	wg.Wait()
+	close(errChan)
+
+	// Check for any errors
+	var errors []string
+	for err := range errChan {
+		if err != nil {
+			errors = append(errors, err.Error())
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to scale workers: %v", errors)
+	}
+
 	return nil
+}
+
+// workerHeartbeat maintains worker status as active
+func (s *Supervisor) workerHeartbeat(ctx context.Context, workerID string) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			status, err := s.poolManager.GetWorkerStatus(workerID)
+			if err != nil || status == "offline" {
+				return
+			}
+			s.poolManager.UpdateWorkerStatus(workerID, "available")
+		}
+	}
 }
 
 // SubmitTask adds a task to the queue with consensus requirements
@@ -490,6 +637,8 @@ func (s *Supervisor) SubmitTask(task string) {
 			MinimumAgreement: requirements.MinimumAgreement,
 			TimeoutDuration:  time.Duration(requirements.TimeoutSeconds) * time.Second,
 			VotingStrategy:   "majority",
+			MatchStrategy:    requirements.MatchStrategy,
+			NumericTolerance: requirements.NumericTolerance,
 		},
 	}
 

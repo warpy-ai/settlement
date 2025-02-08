@@ -14,19 +14,35 @@ type Instruction struct {
 	Consensus   ConsensusConfig
 }
 
-// WorkerResult stores individual worker responses and their voting power
-type WorkerResult struct {
-	WorkerID    string
-	Result      string
-	VotingPower float64
-	Timestamp   time.Time
+// WorkerResponse represents a structured response from a worker
+type WorkerResponse struct {
+	// Core response fields that must match for consensus
+	Decision   string  `json:"decision"`   // The main decision/answer
+	Confidence float64 `json:"confidence"` // Worker's confidence in the result (0-1)
+	Category   string  `json:"category"`   // Type of task (translation, analysis, calculation, etc.)
+
+	// Supporting information that doesn't need to match for consensus
+	Reasoning    string            `json:"reasoning"`    // Explanation of how the decision was reached
+	Metadata     map[string]string `json:"metadata"`     // Additional task-specific metadata
+	Alternatives []string          `json:"alternatives"` // Alternative answers considered
 }
+
+// ConsensusStrategy defines how to compare worker responses
+type ConsensusStrategy string
+
+const (
+	ExactMatch    ConsensusStrategy = "exact_match"    // Responses must match exactly
+	SemanticMatch ConsensusStrategy = "semantic_match" // Responses are compared semantically
+	NumericMatch  ConsensusStrategy = "numeric_match"  // Numeric values within tolerance
+)
 
 // ConsensusConfig defines how consensus should be reached
 type ConsensusConfig struct {
 	MinimumAgreement float64 // Minimum percentage needed for consensus
 	TimeoutDuration  time.Duration
-	VotingStrategy   string // e.g., "majority", "weighted"
+	VotingStrategy   string            // e.g., "majority", "weighted"
+	MatchStrategy    ConsensusStrategy // How to compare responses
+	NumericTolerance float64           // For numeric comparisons, the acceptable difference
 }
 
 // WorkerPool manages available workers and their states
@@ -54,4 +70,12 @@ type TaskQueue struct {
 type TaskResult struct {
 	Result string
 	Error  error
+}
+
+// WorkerResult stores individual worker responses and their voting power
+type WorkerResult struct {
+	WorkerID    string
+	Response    *WorkerResponse
+	VotingPower float64
+	Timestamp   time.Time
 }

@@ -52,13 +52,26 @@ func (pm *PoolManager) GetAvailableWorkers(count int) ([]*WorkerState, error) {
 
 	var available []*WorkerState
 	for _, worker := range pm.workers {
-		if worker.Status == "available" {
+		if worker.Status == "available" && time.Since(worker.LastHeartbeat) <= 30*time.Second {
 			available = append(available, worker)
 		}
 	}
 
 	if len(available) < count {
-		return nil, fmt.Errorf("not enough available workers. Need %d, have %d", count, len(available))
+		total := 0
+		busy := 0
+		offline := 0
+		for _, w := range pm.workers {
+			total++
+			switch w.Status {
+			case "busy":
+				busy++
+			case "offline":
+				offline++
+			}
+		}
+		return nil, fmt.Errorf("not enough available workers. Need %d, have %d (Total: %d, Busy: %d, Offline: %d)",
+			count, len(available), total, busy, offline)
 	}
 
 	// Return the requested number of workers
@@ -75,8 +88,11 @@ func (pm *PoolManager) UpdateWorkerStatus(workerID string, status string) error 
 		return fmt.Errorf("worker %s not found", workerID)
 	}
 
+	oldStatus := worker.Status
 	worker.Status = status
 	worker.LastHeartbeat = time.Now()
+
+	log.Printf("[PoolManager] Worker %s status changed: %s -> %s", workerID, oldStatus, status)
 	return nil
 }
 
@@ -117,9 +133,10 @@ func (pm *PoolManager) monitorWorkerHealth() {
 		pm.mu.Lock()
 		now := time.Now()
 		for id, worker := range pm.workers {
-			if now.Sub(worker.LastHeartbeat) > 30*time.Second {
+			if worker.Status != "offline" && now.Sub(worker.LastHeartbeat) > 30*time.Second {
+				oldStatus := worker.Status
 				worker.Status = "offline"
-				log.Printf("Worker %s marked as offline due to inactivity", id)
+				log.Printf("[PoolManager] Worker %s marked as offline (was %s) due to inactivity", id, oldStatus)
 			}
 		}
 		pm.mu.Unlock()

@@ -2,11 +2,16 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	pb "settlement-core/proto/gen/proto"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // QueueManager handles the instruction queue and task distribution
@@ -17,7 +22,9 @@ type QueueManager struct {
 	taskResults   map[string][]WorkerResult
 	resultsChan   chan TaskResult
 	consensusChan chan *Instruction
-	supervisor    *Supervisor // Add reference to supervisor
+	supervisor    *Supervisor
+	retryHistory  map[string]map[string]bool // taskID -> workerID -> used
+	maxRetries    int
 }
 
 // NewQueueManager creates a new queue manager instance
@@ -28,6 +35,8 @@ func NewQueueManager(poolManager *PoolManager) *QueueManager {
 		taskResults:   make(map[string][]WorkerResult),
 		resultsChan:   make(chan TaskResult, 100),
 		consensusChan: make(chan *Instruction, 10),
+		retryHistory:  make(map[string]map[string]bool),
+		maxRetries:    3, // Maximum number of retry attempts
 	}
 }
 
@@ -57,16 +66,93 @@ func (qm *QueueManager) AddInstruction(instruction *Instruction) error {
 
 // processInstruction handles the execution of a single instruction
 func (qm *QueueManager) processInstruction(instruction *Instruction) {
+	retryCount := 0
+	for retryCount <= qm.maxRetries {
+		if retryCount > 0 {
+			log.Printf("[QueueManager] Retry attempt %d for instruction %s", retryCount, instruction.TaskID)
+		}
+
+		// Initialize retry history for this task if not exists
+		qm.mu.Lock()
+		if _, exists := qm.retryHistory[instruction.TaskID]; !exists {
+			qm.retryHistory[instruction.TaskID] = make(map[string]bool)
+		}
+		qm.mu.Unlock()
+
+		success := qm.tryProcessInstruction(instruction, retryCount)
+		if success {
+			return
+		}
+
+		retryCount++
+		if retryCount <= qm.maxRetries {
+			// Scale up workers if needed before next retry
+			currentWorkers := len(qm.supervisor.workers)
+			if currentWorkers < qm.supervisor.maxWorkers {
+				newWorkerCount := min(currentWorkers+2, qm.supervisor.maxWorkers)
+				if err := qm.supervisor.scaleWorkers(context.Background(), newWorkerCount); err != nil {
+					log.Printf("[QueueManager] Failed to scale workers: %v", err)
+				} else {
+					log.Printf("[QueueManager] Scaled workers from %d to %d for retry", currentWorkers, newWorkerCount)
+				}
+			}
+			time.Sleep(time.Second * 2) // Wait before retry
+		}
+	}
+
+	log.Printf("[QueueManager] Failed to reach consensus for instruction %s after %d retries", instruction.TaskID, qm.maxRetries)
+	qm.resultsChan <- TaskResult{Error: fmt.Errorf("failed to reach consensus after %d retries", qm.maxRetries)}
+}
+
+// tryProcessInstruction attempts to process an instruction once
+func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCount int) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), instruction.Consensus.TimeoutDuration)
 	defer cancel()
 
-	// Get available workers
-	workers, err := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
-	if err != nil {
-		log.Printf("Failed to get workers for instruction %s: %v", instruction.TaskID, err)
-		qm.resultsChan <- TaskResult{Error: err}
-		return
+	// Get unused workers
+	var workers []*WorkerState
+	for retries := 0; retries < 5; retries++ {
+		availableWorkers, getErr := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
+		if getErr != nil {
+			log.Printf("[QueueManager] Attempt %d: Failed to get workers: %v", retries+1, getErr)
+			time.Sleep(time.Second * 2)
+			continue
+		}
+
+		// Filter out previously used workers
+		workers = make([]*WorkerState, 0)
+		qm.mu.RLock()
+		usedWorkers := qm.retryHistory[instruction.TaskID]
+		qm.mu.RUnlock()
+
+		for _, w := range availableWorkers {
+			if !usedWorkers[w.ID] {
+				workers = append(workers, w)
+				if len(workers) >= instruction.WorkerCount {
+					break
+				}
+			}
+		}
+
+		if len(workers) >= instruction.WorkerCount {
+			break
+		}
+
+		log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), retrying...",
+			len(workers), instruction.WorkerCount)
+		time.Sleep(time.Second * 2)
 	}
+
+	if len(workers) < instruction.WorkerCount {
+		return false
+	}
+
+	// Mark selected workers as used
+	qm.mu.Lock()
+	for _, w := range workers {
+		qm.retryHistory[instruction.TaskID][w.ID] = true
+	}
+	qm.mu.Unlock()
 
 	// Create a WaitGroup for worker results
 	var wg sync.WaitGroup
@@ -76,31 +162,35 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 	for _, worker := range workers {
 		go func(w *WorkerState) {
 			defer wg.Done()
+			defer func() {
+				qm.poolManager.UpdateWorkerStatus(w.ID, "available")
+			}()
 
-			// Mark worker as busy
-			w.Status = "busy"
-			w.CurrentTaskID = instruction.TaskID
+			qm.poolManager.UpdateWorkerStatus(w.ID, "busy")
 
-			// Process the task
 			result, err := qm.processTaskWithWorker(ctx, instruction, w)
 			if err != nil {
-				log.Printf("Worker %s failed to process task: %v", w.ID, err)
+				log.Printf("[QueueManager] Worker %s failed to process task: %v", w.ID, err)
 				return
 			}
 
-			// Store the result
 			qm.mu.Lock()
 			qm.taskResults[instruction.TaskID] = append(qm.taskResults[instruction.TaskID], WorkerResult{
 				WorkerID:    w.ID,
-				Result:      result,
+				Response:    &WorkerResponse{},
 				VotingPower: w.VotingPower,
 				Timestamp:   time.Now(),
 			})
-			qm.mu.Unlock()
 
-			// Mark worker as available
-			w.Status = "available"
-			w.CurrentTaskID = ""
+			var response WorkerResponse
+			if err := json.Unmarshal([]byte(result), &response); err != nil {
+				log.Printf("[QueueManager] Worker %s failed to parse response: %v", w.ID, err)
+				qm.mu.Unlock()
+				return
+			}
+
+			qm.taskResults[instruction.TaskID][len(qm.taskResults[instruction.TaskID])-1].Response = &response
+			qm.mu.Unlock()
 		}(worker)
 	}
 
@@ -113,16 +203,17 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 
 	select {
 	case <-ctx.Done():
-		log.Printf("Instruction %s timed out", instruction.TaskID)
-		qm.resultsChan <- TaskResult{Error: fmt.Errorf("instruction timed out")}
+		log.Printf("[QueueManager] Instruction %s timed out on retry %d", instruction.TaskID, retryCount)
+		return false
 	case <-done:
-		// Check consensus
 		consensus, result := qm.checkConsensus(instruction)
 		if consensus {
+			log.Printf("[QueueManager] Consensus reached for instruction %s on retry %d", instruction.TaskID, retryCount)
 			qm.resultsChan <- TaskResult{Result: result}
-		} else {
-			qm.resultsChan <- TaskResult{Error: fmt.Errorf("failed to reach consensus")}
+			return true
 		}
+		log.Printf("[QueueManager] Failed to reach consensus for instruction %s on retry %d", instruction.TaskID, retryCount)
+		return false
 	}
 }
 
@@ -194,33 +285,215 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 		return false, ""
 	}
 
-	// Count occurrences of each result
-	resultCounts := make(map[string]float64)
+	// Group responses by decision and calculate weighted votes
+	type consensusGroup struct {
+		totalVotes  float64
+		responses   []*WorkerResult
+		confidence  float64
+		rateLimited bool
+	}
+	groups := make(map[string]*consensusGroup)
 	totalVotingPower := 0.0
+	rateLimitedCount := 0
 
 	for _, result := range results {
-		resultCounts[result.Result] += result.VotingPower
+		if result.Response == nil {
+			continue
+		}
+
+		// Check for rate limit errors
+		if result.Response.Metadata != nil && strings.Contains(result.Response.Metadata["error"], "Rate limit reached") {
+			rateLimitedCount++
+			continue
+		}
+
+		key := result.Response.Decision
+		switch instruction.Consensus.MatchStrategy {
+		case NumericMatch:
+			// For numeric results, group within tolerance
+			value, err := parseNumericValue(result.Response.Decision)
+			if err != nil {
+				log.Printf("[QueueManager] Failed to parse numeric value: %v", err)
+				continue
+			}
+			found := false
+			for existingKey := range groups {
+				existingValue, _ := parseNumericValue(existingKey)
+				if math.Abs(value-existingValue) <= instruction.Consensus.NumericTolerance {
+					key = existingKey // Use existing key to group similar values
+					found = true
+					break
+				}
+			}
+			if !found {
+				key = result.Response.Decision
+			}
+
+		case SemanticMatch:
+			// For semantic match, normalize the text and find similar groups
+			normalizedKey := normalizeText(key)
+			found := false
+			for existingKey := range groups {
+				if similarity := calculateSimilarity(normalizedKey, normalizeText(existingKey)); similarity >= 0.7 { // Reduced threshold
+					key = existingKey // Use existing key to group similar responses
+					found = true
+					break
+				}
+			}
+			if !found {
+				key = result.Response.Decision
+			}
+		}
+
+		weightedVote := result.VotingPower * result.Response.Confidence
+		if group, exists := groups[key]; exists {
+			group.totalVotes += weightedVote
+			group.responses = append(group.responses, &result)
+			group.confidence = (group.confidence*float64(len(group.responses)-1) + result.Response.Confidence) / float64(len(group.responses))
+		} else {
+			groups[key] = &consensusGroup{
+				totalVotes: weightedVote,
+				responses:  []*WorkerResult{&result},
+				confidence: result.Response.Confidence,
+			}
+		}
 		totalVotingPower += result.VotingPower
 	}
 
-	// Find the result with the highest voting power
+	// If too many rate limits, return false to retry
+	if float64(rateLimitedCount)/float64(len(results)) > 0.5 {
+		log.Printf("[QueueManager] Too many rate limited responses (%d/%d), will retry",
+			rateLimitedCount, len(results))
+		return false, ""
+	}
+
+	// Find the group with the highest weighted votes
 	var bestResult string
 	var highestVotes float64
+	var bestGroup *consensusGroup
 
-	for result, votes := range resultCounts {
-		percentage := votes / totalVotingPower
-		if percentage > highestVotes {
-			highestVotes = percentage
-			bestResult = result
+	for decision, group := range groups {
+		weightedVotes := group.totalVotes / totalVotingPower
+		log.Printf("[QueueManager] Group '%s' has %.2f%% agreement (confidence: %.2f)",
+			decision, weightedVotes*100, group.confidence)
+
+		if weightedVotes > highestVotes {
+			highestVotes = weightedVotes
+			bestResult = decision
+			bestGroup = group
 		}
 	}
 
+	// Adjust minimum agreement based on number of groups
+	adjustedMinAgreement := instruction.Consensus.MinimumAgreement
+	if len(groups) > 2 {
+		// Lower the threshold when there are many valid but similar answers
+		adjustedMinAgreement *= 0.8
+	}
+
 	// Check if the best result meets the minimum agreement threshold
-	if highestVotes >= instruction.Consensus.MinimumAgreement {
-		return true, bestResult
+	if highestVotes >= adjustedMinAgreement {
+		consensusResponse := &WorkerResponse{
+			Decision:   bestResult,
+			Confidence: bestGroup.confidence,
+			Category:   bestGroup.responses[0].Response.Category,
+			Reasoning:  fmt.Sprintf("Consensus reached with %.2f%% agreement among %d workers", highestVotes*100, len(bestGroup.responses)),
+			Metadata: map[string]string{
+				"consensus_strategy":  string(instruction.Consensus.MatchStrategy),
+				"worker_count":        fmt.Sprintf("%d", len(results)),
+				"agreeing_workers":    fmt.Sprintf("%d", len(bestGroup.responses)),
+				"agreement_threshold": fmt.Sprintf("%.2f", adjustedMinAgreement),
+				"actual_agreement":    fmt.Sprintf("%.2f", highestVotes),
+				"total_groups":        fmt.Sprintf("%d", len(groups)),
+			},
+		}
+
+		// Collect alternative answers from other groups
+		for decision, group := range groups {
+			if decision != bestResult {
+				consensusResponse.Alternatives = append(
+					consensusResponse.Alternatives,
+					fmt.Sprintf("%s (%.2f%% agreement, confidence: %.2f)",
+						decision, (group.totalVotes/totalVotingPower)*100, group.confidence),
+				)
+			}
+		}
+
+		resultBytes, err := json.Marshal(consensusResponse)
+		if err != nil {
+			log.Printf("[QueueManager] Failed to marshal consensus response: %v", err)
+			return false, ""
+		}
+
+		return true, string(resultBytes)
 	}
 
 	return false, ""
+}
+
+// parseNumericValue attempts to extract a numeric value from a string
+func parseNumericValue(s string) (float64, error) {
+	// Remove any currency symbols, commas, and other non-numeric characters
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsDigit(r) || r == '.' || r == '-' {
+			return r
+		}
+		return -1
+	}, s)
+
+	return strconv.ParseFloat(s, 64)
+}
+
+// normalizeText removes punctuation, extra spaces, and converts to lowercase
+func normalizeText(text string) string {
+	text = strings.ToLower(text)
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsPunct(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// calculateSimilarity returns a similarity score between 0 and 1
+func calculateSimilarity(text1, text2 string) float64 {
+	words1 := strings.Fields(text1)
+	words2 := strings.Fields(text2)
+
+	// Create word frequency maps
+	freq1 := make(map[string]int)
+	freq2 := make(map[string]int)
+
+	for _, word := range words1 {
+		freq1[word]++
+	}
+	for _, word := range words2 {
+		freq2[word]++
+	}
+
+	// Calculate intersection
+	intersection := 0
+	for word, count1 := range freq1 {
+		if count2, exists := freq2[word]; exists {
+			intersection += min(count1, count2)
+		}
+	}
+
+	// Calculate union
+	union := len(words1) + len(words2) - intersection
+
+	if union == 0 {
+		return 1.0
+	}
+	return float64(intersection) / float64(union)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GetResults returns the channel for receiving task results

@@ -10,11 +10,13 @@ import (
 )
 
 type TaskRequirements struct {
-	WorkerCount      int     `json:"worker_count"`
-	MinimumAgreement float64 `json:"minimum_agreement"`
-	Complexity       string  `json:"complexity"` // "low", "medium", "high"
-	Priority         int     `json:"priority"`   // 1-5, where 5 is highest
-	TimeoutSeconds   int     `json:"timeout_seconds"`
+	WorkerCount      int               `json:"worker_count"`
+	MinimumAgreement float64           `json:"minimum_agreement"`
+	Complexity       string            `json:"complexity"` // "low", "medium", "high"
+	Priority         int               `json:"priority"`   // 1-5, where 5 is highest
+	TimeoutSeconds   int               `json:"timeout_seconds"`
+	MatchStrategy    ConsensusStrategy `json:"match_strategy"`
+	NumericTolerance float64           `json:"numeric_tolerance"`
 }
 
 // AnalyzeTask uses OpenAI to determine task requirements
@@ -28,8 +30,20 @@ You must respond with ONLY a JSON object (no other text) containing these fields
     "minimum_agreement": <float between 0.5-1.0>,
     "complexity": <"low", "medium", or "high">,
     "priority": <integer 1-5, where 5 is highest>,
-    "timeout_seconds": <integer between 30-300>
+    "timeout_seconds": <integer between 30-300>,
+    "match_strategy": <"exact_match", "semantic_match", or "numeric_match">,
+    "numeric_tolerance": <float, e.g., 0.01 for calculations>
 }
+
+Choose match_strategy based on task type:
+- exact_match: For tasks requiring exact matches (e.g., simple translations)
+- semantic_match: For tasks with potential wording variations (e.g., analysis, complex translations)
+- numeric_match: For calculations and numeric results
+
+Set numeric_tolerance based on precision requirements:
+- 0.01 for financial calculations
+- 0.1 for general numeric tasks
+- 1.0 for rough estimates
 
 Base your analysis on:
 1. Task complexity and ambiguity
@@ -43,7 +57,9 @@ Example response:
     "minimum_agreement": 0.66,
     "complexity": "medium",
     "priority": 3,
-    "timeout_seconds": 60
+    "timeout_seconds": 60,
+    "match_strategy": "semantic_match",
+    "numeric_tolerance": 0.1
 }`
 
 	resp, err := client.CreateChatCompletion(
@@ -78,12 +94,13 @@ Example response:
 		return nil, fmt.Errorf("invalid requirements: %v\nResponse: %s", err, resp.Choices[0].Message.Content)
 	}
 
-	log.Printf("[TaskAnalyzer] Task analyzed: workers=%d, agreement=%.2f, complexity=%s, priority=%d, timeout=%ds",
+	log.Printf("[TaskAnalyzer] Task analyzed: workers=%d, agreement=%.2f, complexity=%s, priority=%d, timeout=%ds, strategy=%s",
 		requirements.WorkerCount,
 		requirements.MinimumAgreement,
 		requirements.Complexity,
 		requirements.Priority,
-		requirements.TimeoutSeconds)
+		requirements.TimeoutSeconds,
+		requirements.MatchStrategy)
 
 	return &requirements, nil
 }
@@ -110,6 +127,17 @@ func validateRequirements(req *TaskRequirements) error {
 		// Valid complexity
 	default:
 		return fmt.Errorf("invalid complexity: %s (must be low, medium, or high)", req.Complexity)
+	}
+
+	switch req.MatchStrategy {
+	case ExactMatch, SemanticMatch, NumericMatch:
+		// Valid strategy
+	default:
+		return fmt.Errorf("invalid match strategy: %s", req.MatchStrategy)
+	}
+
+	if req.MatchStrategy == NumericMatch && req.NumericTolerance <= 0 {
+		return fmt.Errorf("numeric match strategy requires positive tolerance value")
 	}
 
 	return nil
