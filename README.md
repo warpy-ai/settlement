@@ -4,7 +4,7 @@
 
 ## AI Multi-Agent Consent Engine: A Framework for Decentralized Decision Making
 
-This is a new vertson of [settlementIO](https://github.com/jucasoliveira/settlementIO)
+This is a new version of [settlementIO](https://github.com/jucasoliveira/settlementIO)
 
 ### 1. Introduction
 
@@ -158,7 +158,7 @@ This architecture, incorporating controlled biases, aligns with modern needs for
 
 #### Overview
 
-The concept of Punitive Proof-of-Adequacy , or PPA, employs a punitive feedback loop where AI agents are rewarded or penalized based on their alignment with the consensus outcome. This system ensures dynamic adjustment of voting power, guaranteeing a decision-making process that evolves and refines over time.
+The concept of Punitive Proof-of-Adequacy, or PPA, employs a punitive feedback loop where AI agents are rewarded or penalized based on their alignment with the consensus outcome. This system ensures dynamic adjustment of voting power, guaranteeing a decision-making process that evolves and refines over time.
 
 #### Key Components
 
