@@ -247,15 +247,21 @@ func (ts *TaskStatus) markCompleted() {
 func (s *Supervisor) Start(ctx context.Context) {
 	log.Printf("[Supervisor] Starting supervisor with %d workers", s.numWorkers)
 
-	// Build worker binary
-	buildCmd := exec.Command("go", "build", "-o", filepath.Join(s.workDir, "worker"), "cmd/worker/main.go")
-	buildCmd.Dir = s.workDir
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
+	// Check if worker binary already exists (e.g., in Docker)
+	workerPath := filepath.Join(s.workDir, "worker")
+	if _, err := os.Stat(workerPath); os.IsNotExist(err) {
+		// Build worker binary only if it doesn't exist
+		buildCmd := exec.Command("go", "build", "-o", workerPath, "cmd/worker/main.go")
+		buildCmd.Dir = s.workDir
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
 
-	log.Printf("[Supervisor] Building worker binary in %s", s.workDir)
-	if err := buildCmd.Run(); err != nil {
-		log.Fatalf("[Supervisor] Failed to build worker binary: %v", err)
+		log.Printf("[Supervisor] Building worker binary in %s", s.workDir)
+		if err := buildCmd.Run(); err != nil {
+			log.Fatalf("[Supervisor] Failed to build worker binary: %v", err)
+		}
+	} else {
+		log.Printf("[Supervisor] Using existing worker binary at %s", workerPath)
 	}
 
 	// Start worker processes
