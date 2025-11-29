@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  settlement:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: settlement-api
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/v1/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - settlement-network
+
+networks:
+  settlement-network:
+    driver: bridge

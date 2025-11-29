@@ -1,0 +1,35 @@
+# Ignore macOS metadata files
+._*
+.DS_Store
+**/.DS_Store
+**/._*
+
+# Ignore git
+.git
+.gitignore
+
+# Ignore build artifacts
+settlement
+worker
+*.exe
+*.test
+*.out
+
+# Ignore IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Ignore logs
+*.log
+settlement.log
+settlement.pid
+
+# Ignore environment files (will be passed via docker-compose)
+.env.local
+
+# Ignore temporary files
+tmp/
+temp/

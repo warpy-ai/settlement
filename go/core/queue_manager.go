@@ -79,6 +79,26 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 		}
 		qm.mu.Unlock()
 
+		// Calculate how many workers we need considering used workers
+		qm.mu.RLock()
+		usedWorkerCount := len(qm.retryHistory[instruction.TaskID])
+		qm.mu.RUnlock()
+
+		// Scale up workers if needed before trying to process
+		currentWorkers := len(qm.supervisor.workers)
+		requiredWorkers := instruction.WorkerCount + usedWorkerCount
+		
+		if currentWorkers < requiredWorkers && currentWorkers < qm.supervisor.maxWorkers {
+			targetWorkers := min(requiredWorkers, qm.supervisor.maxWorkers)
+			if err := qm.supervisor.scaleWorkers(context.Background(), targetWorkers); err != nil {
+				log.Printf("[QueueManager] Failed to scale workers: %v", err)
+			} else {
+				log.Printf("[QueueManager] Scaled workers from %d to %d for retry (used workers: %d)", 
+					currentWorkers, targetWorkers, usedWorkerCount)
+				time.Sleep(time.Second * 2) // Wait for workers to initialize
+			}
+		}
+
 		success := qm.tryProcessInstruction(instruction, retryCount)
 		if success {
 			return
@@ -86,16 +106,6 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 
 		retryCount++
 		if retryCount <= qm.maxRetries {
-			// Scale up workers if needed before next retry
-			currentWorkers := len(qm.supervisor.workers)
-			if currentWorkers < qm.supervisor.maxWorkers {
-				newWorkerCount := min(currentWorkers+2, qm.supervisor.maxWorkers)
-				if err := qm.supervisor.scaleWorkers(context.Background(), newWorkerCount); err != nil {
-					log.Printf("[QueueManager] Failed to scale workers: %v", err)
-				} else {
-					log.Printf("[QueueManager] Scaled workers from %d to %d for retry", currentWorkers, newWorkerCount)
-				}
-			}
 			time.Sleep(time.Second * 2) // Wait before retry
 		}
 	}
@@ -111,27 +121,58 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 
 	// Get unused workers with exponential backoff
 	var workers []*WorkerState
-	maxAttempts := 10
-	baseDelay := time.Second
+	maxAttempts := 5
+	baseDelay := 500 * time.Millisecond
+	
+	qm.mu.RLock()
+	usedWorkers := qm.retryHistory[instruction.TaskID]
+	qm.mu.RUnlock()
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		availableWorkers, getErr := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
 		if getErr != nil {
 			delay := time.Duration(1<<uint(attempt)) * baseDelay
-			if delay > 10*time.Second {
-				delay = 10 * time.Second
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
 			}
-			log.Printf("[QueueManager] Attempt %d: Failed to get workers: %v, retrying in %v...",
-				attempt+1, getErr, delay)
+
+			// Check if we need to scale up
+			total, available := qm.poolManager.GetWorkerCount()
+			unusedCount := 0
+			for _, w := range availableWorkers {
+				if !usedWorkers[w.ID] {
+					unusedCount++
+				}
+			}
+
+			log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), total=%d, available=%d", 
+				unusedCount, instruction.WorkerCount, total, available)
+
+			// If we have less than needed workers and can scale up, do it immediately
+			if unusedCount < instruction.WorkerCount {
+				currentWorkers := len(qm.supervisor.workers)
+				if currentWorkers < qm.supervisor.maxWorkers {
+					targetWorkers := min(currentWorkers+instruction.WorkerCount, qm.supervisor.maxWorkers)
+					if err := qm.supervisor.scaleWorkers(ctx, targetWorkers); err != nil {
+						log.Printf("[QueueManager] Failed to scale workers: %v", err)
+					} else {
+						log.Printf("[QueueManager] Proactively scaled workers from %d to %d", 
+							currentWorkers, targetWorkers)
+						time.Sleep(time.Second) // Brief wait for workers to initialize
+					}
+				}
+			}
+
+			// Force cleanup of stale workers before next attempt
+			qm.poolManager.CleanupStaleWorkers()
+			
+			log.Printf("[QueueManager] Retrying worker allocation in %v...", delay)
 			time.Sleep(delay)
 			continue
 		}
 
 		// Filter out previously used workers
 		workers = make([]*WorkerState, 0)
-		qm.mu.RLock()
-		usedWorkers := qm.retryHistory[instruction.TaskID]
-		qm.mu.RUnlock()
-
 		for _, w := range availableWorkers {
 			if !usedWorkers[w.ID] {
 				workers = append(workers, w)
@@ -146,34 +187,25 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		}
 
 		delay := time.Duration(1<<uint(attempt)) * baseDelay
-		if delay > 10*time.Second {
-			delay = 10 * time.Second
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
 		}
-		log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), retrying in %v...",
-			len(workers), instruction.WorkerCount, delay)
+		
+		// If we don't have enough workers after scaling, wait briefly and retry
 		time.Sleep(delay)
 	}
 
 	if len(workers) < instruction.WorkerCount {
-		if currentWorkers := len(qm.supervisor.workers); currentWorkers < qm.supervisor.maxWorkers {
-			newWorkerCount := min(currentWorkers+2, qm.supervisor.maxWorkers)
-			if err := qm.supervisor.scaleWorkers(ctx, newWorkerCount); err != nil {
-				log.Printf("[QueueManager] Failed to scale workers: %v", err)
-			} else {
-				log.Printf("[QueueManager] Scaled workers from %d to %d for retry", currentWorkers, newWorkerCount)
-				// Give workers time to initialize
-				time.Sleep(time.Second * 2)
-				return false
-			}
-		}
 		return false
 	}
 
-	// Mark selected workers as used
+	// Mark selected workers as used and assign task
 	qm.mu.Lock()
 	for _, w := range workers {
 		qm.retryHistory[instruction.TaskID][w.ID] = true
-		qm.poolManager.UpdateWorkerStatus(w.ID, "busy")
+		if err := qm.poolManager.AssignTaskToWorker(w.ID, instruction.TaskID); err != nil {
+			log.Printf("[QueueManager] Failed to assign task to worker %s: %v", w.ID, err)
+		}
 	}
 	qm.mu.Unlock()
 
@@ -186,7 +218,9 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		go func(w *WorkerState) {
 			defer wg.Done()
 			defer func() {
-				qm.poolManager.UpdateWorkerStatus(w.ID, "available")
+				if err := qm.poolManager.ReleaseWorker(w.ID); err != nil {
+					log.Printf("[QueueManager] Failed to release worker %s: %v", w.ID, err)
+				}
 			}()
 
 			result, err := qm.processTaskWithWorker(ctx, instruction, w)
@@ -225,6 +259,8 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	select {
 	case <-ctx.Done():
 		log.Printf("[QueueManager] Instruction %s timed out on retry %d", instruction.TaskID, retryCount)
+		// Force cleanup of any stuck workers
+		qm.poolManager.CleanupStaleWorkers()
 		return false
 	case <-done:
 		consensus, result := qm.checkConsensus(instruction)

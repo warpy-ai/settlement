@@ -51,31 +51,71 @@ func (pm *PoolManager) GetAvailableWorkers(count int) ([]*WorkerState, error) {
 	defer pm.mu.RUnlock()
 
 	var available []*WorkerState
+	var stale []*WorkerState
+	var busy []*WorkerState
+	var offline []*WorkerState
+
+	now := time.Now()
 	for _, worker := range pm.workers {
-		if worker.Status == "available" && time.Since(worker.LastHeartbeat) <= 30*time.Second {
+		timeSinceHeartbeat := now.Sub(worker.LastHeartbeat)
+		
+		// Categorize workers based on status and heartbeat
+		if timeSinceHeartbeat > 30*time.Second {
+			stale = append(stale, worker)
+		} else if worker.Status == "available" {
 			available = append(available, worker)
+		} else if worker.Status == "busy" {
+			busy = append(busy, worker)
+		} else {
+			offline = append(offline, worker)
 		}
 	}
 
 	if len(available) < count {
-		total := 0
-		busy := 0
-		offline := 0
-		for _, w := range pm.workers {
-			total++
-			switch w.Status {
-			case "busy":
-				busy++
-			case "offline":
-				offline++
-			}
+		// Provide detailed worker pool status
+		log.Printf("[PoolManager] Worker pool status - Available: %d, Stale: %d, Busy: %d, Offline: %d (Need: %d)",
+			len(available), len(stale), len(busy), len(offline), count)
+		
+		// If we have stale workers, trigger cleanup
+		if len(stale) > 0 {
+			go pm.CleanupStaleWorkers()
 		}
-		return nil, fmt.Errorf("not enough available workers. Need %d, have %d (Total: %d, Busy: %d, Offline: %d)",
-			count, len(available), total, busy, offline)
+		
+		return nil, fmt.Errorf("not enough available workers. Need %d, have %d (Stale: %d, Busy: %d, Offline: %d)",
+			count, len(available), len(stale), len(busy), len(offline))
 	}
 
 	// Return the requested number of workers
 	return available[:count], nil
+}
+
+// CleanupStaleWorkers removes workers that haven't sent heartbeats
+func (pm *PoolManager) CleanupStaleWorkers() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	now := time.Now()
+	staleWorkers := 0
+	releasedWorkers := 0
+
+	for id, worker := range pm.workers {
+		timeSinceHeartbeat := now.Sub(worker.LastHeartbeat)
+		if timeSinceHeartbeat > 30*time.Second {
+			staleWorkers++
+			if worker.Status == "busy" {
+				worker.Status = "available"
+				worker.CurrentTaskID = ""
+				releasedWorkers++
+				log.Printf("[PoolManager] Force released stale worker %s (no heartbeat for %.0f seconds)",
+					id, timeSinceHeartbeat.Seconds())
+			}
+		}
+	}
+
+	if staleWorkers > 0 {
+		log.Printf("[PoolManager] Cleanup completed - Found %d stale workers, released %d busy workers",
+			staleWorkers, releasedWorkers)
+	}
 }
 
 // UpdateWorkerStatus updates the status of a worker
@@ -93,6 +133,12 @@ func (pm *PoolManager) UpdateWorkerStatus(workerID string, status string) error 
 		oldStatus := worker.Status
 		worker.Status = status
 		worker.LastHeartbeat = time.Now()
+
+		// Clear current task ID when worker becomes available
+		if status == "available" {
+			worker.CurrentTaskID = ""
+		}
+
 		log.Printf("[PoolManager] Worker %s status changed: %s -> %s", workerID, oldStatus, status)
 	} else if status == "available" {
 		// Just update heartbeat without logging
@@ -130,26 +176,65 @@ func (pm *PoolManager) GetWorkerCount() (total int, available int) {
 	return total, available
 }
 
+// AssignTaskToWorker marks a worker as busy with a specific task
+func (pm *PoolManager) AssignTaskToWorker(workerID string, taskID string) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	worker, exists := pm.workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker %s not found", workerID)
+	}
+
+	if worker.Status != "available" {
+		return fmt.Errorf("worker %s is not available (current status: %s)", workerID, worker.Status)
+	}
+
+	worker.Status = "busy"
+	worker.CurrentTaskID = taskID
+	worker.LastHeartbeat = time.Now()
+	log.Printf("[PoolManager] Worker %s assigned task %s", workerID, taskID)
+	return nil
+}
+
+// ReleaseWorker marks a worker as available and clears its task
+func (pm *PoolManager) ReleaseWorker(workerID string) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	worker, exists := pm.workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker %s not found", workerID)
+	}
+
+	if worker.Status == "busy" {
+		worker.Status = "available"
+		worker.CurrentTaskID = ""
+		worker.LastHeartbeat = time.Now()
+		log.Printf("[PoolManager] Worker %s released and now available", workerID)
+	}
+
+	return nil
+}
+
 // monitorWorkerHealth periodically checks worker health and updates status
 func (pm *PoolManager) monitorWorkerHealth() {
 	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
 	for range ticker.C {
-		pm.mu.Lock()
+		pm.mu.RLock()
 		now := time.Now()
-		for id, worker := range pm.workers {
-			if worker.Status != "offline" {
-				timeSinceHeartbeat := now.Sub(worker.LastHeartbeat)
-				if timeSinceHeartbeat > 30*time.Second {
-					oldStatus := worker.Status
-					worker.Status = "offline"
-					log.Printf("[PoolManager] Worker %s marked as offline (was %s) due to inactivity for %.0f seconds",
-						id, oldStatus, timeSinceHeartbeat.Seconds())
-				}
+		staleCount := 0
+		for _, worker := range pm.workers {
+			if now.Sub(worker.LastHeartbeat) > 30*time.Second {
+				staleCount++
 			}
 		}
-		pm.mu.Unlock()
+		pm.mu.RUnlock()
+
+		// If we have stale workers, trigger cleanup
+		if staleCount > 0 {
+			pm.CleanupStaleWorkers()
+		}
 	}
 }
 
