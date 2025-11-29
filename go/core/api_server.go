@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -175,14 +176,37 @@ func (s *APIServer) processTask(taskID string, submission *TaskSubmission) {
 	// Update task status
 	s.updateTaskStatus(taskID, "processing", nil)
 
-	// Create instruction from submission
-	instruction := &Instruction{
-		TaskID:      taskID,
-		Content:     submission.Content,
-		WorkerCount: s.getWorkerCount(submission),
+	// Analyze task requirements first
+	ctx := context.Background()
+	requirements, err := AnalyzeTask(ctx, submission.Content, s.supervisor.apiKey)
+	if err != nil {
+		log.Printf("[APIServer] Failed to analyze task: %v", err)
+		s.updateTaskStatus(taskID, "failed", err)
+		return
 	}
 
-	// Apply custom rules if provided
+	// Scale workers if needed
+	if err := s.supervisor.scaleWorkers(ctx, requirements.WorkerCount); err != nil {
+		log.Printf("[APIServer] Failed to scale workers: %v", err)
+		s.updateTaskStatus(taskID, "failed", err)
+		return
+	}
+
+	// Create instruction from submission with the API's taskID
+	instruction := &Instruction{
+		TaskID:      taskID, // Use the API's taskID, not a new one
+		Content:     submission.Content,
+		WorkerCount: requirements.WorkerCount,
+		Consensus: ConsensusConfig{
+			MinimumAgreement: requirements.MinimumAgreement,
+			TimeoutDuration:  time.Duration(requirements.TimeoutSeconds) * time.Second,
+			VotingStrategy:   "majority",
+			MatchStrategy:    requirements.MatchStrategy,
+			NumericTolerance: requirements.NumericTolerance,
+		},
+	}
+
+	// Apply custom rules if provided (override analyzed requirements)
 	if submission.Rules != nil {
 		if submission.Rules.MinimumAgreement != nil {
 			instruction.Consensus.MinimumAgreement = *submission.Rules.MinimumAgreement
@@ -197,13 +221,20 @@ func (s *APIServer) processTask(taskID string, submission *TaskSubmission) {
 
 	// Apply constraints if provided
 	if submission.Constraints != nil {
+		if submission.Constraints.WorkerCount != nil {
+			instruction.WorkerCount = *submission.Constraints.WorkerCount
+		}
 		if submission.Constraints.Timeout != nil {
 			instruction.Consensus.TimeoutDuration = submission.Constraints.Timeout.ToDuration()
 		}
 	}
 
-	// Submit task to supervisor
-	s.supervisor.SubmitTask(submission.Content)
+	// Add instruction directly to queue manager (this ensures taskID matches)
+	if err := s.supervisor.queueManager.AddInstruction(instruction); err != nil {
+		log.Printf("[APIServer] Failed to queue task: %v", err)
+		s.updateTaskStatus(taskID, "failed", err)
+		return
+	}
 
 	// Monitor results
 	resultsChan := s.supervisor.GetResults()
@@ -253,6 +284,32 @@ func (s *APIServer) handleGetTaskStatus(w http.ResponseWriter, r *http.Request) 
 	if !exists {
 		s.sendError(w, http.StatusNotFound, "Task not found")
 		return
+	}
+
+	// Get worker statuses from queue manager - this updates in real-time
+	if s.supervisor != nil && s.supervisor.queueManager != nil {
+		workerStatusInfos := s.supervisor.queueManager.GetWorkerStatuses(taskID)
+		workerStatuses := make([]WorkerStatus, 0, len(workerStatusInfos))
+		for _, info := range workerStatusInfos {
+			workerStatuses = append(workerStatuses, WorkerStatus{
+				WorkerID:  info.WorkerID,
+				Status:    info.Status,
+				Progress:  info.Progress,
+				Reasoning: info.Reasoning,
+				Decision:  info.Decision,
+				UpdatedAt: info.UpdatedAt,
+			})
+		}
+		task.Metadata.WorkerStatuses = workerStatuses
+		
+		// Update progress based on worker statuses
+		if len(workerStatuses) > 0 {
+			totalProgress := 0.0
+			for _, ws := range workerStatuses {
+				totalProgress += ws.Progress
+			}
+			task.Progress = (totalProgress / float64(len(workerStatuses))) * 100
+		}
 	}
 
 	s.sendJSON(w, http.StatusOK, task)

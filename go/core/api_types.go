@@ -78,8 +78,10 @@ type TaskResponse struct {
 // WorkerStatus represents the status of a worker processing a task
 type WorkerStatus struct {
 	WorkerID  string    `json:"worker_id"`
-	Status    string    `json:"status"`
-	Progress  float64   `json:"progress"`
+	Status    string    `json:"status"`     // "waiting", "processing", "completed", "failed"
+	Progress  float64   `json:"progress"`   // 0.0 to 1.0
+	Reasoning string    `json:"reasoning,omitempty"` // Worker's reasoning/thinking process
+	Decision  string    `json:"decision,omitempty"`   // Worker's decision/answer
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

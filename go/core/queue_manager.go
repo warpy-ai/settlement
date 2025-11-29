@@ -7,11 +7,14 @@ import (
 	"log"
 	"math"
 	pb "settlement-core/proto/gen/proto"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"google.golang.org/grpc/connectivity"
 )
 
 // QueueManager handles the instruction queue and task distribution
@@ -20,6 +23,7 @@ type QueueManager struct {
 	instructions  []*Instruction
 	poolManager   *PoolManager
 	taskResults   map[string][]WorkerResult
+	workerStatuses map[string]map[string]*WorkerStatusInfo // taskID -> workerID -> status info
 	resultsChan   chan TaskResult
 	consensusChan chan *Instruction
 	supervisor    *Supervisor
@@ -27,16 +31,27 @@ type QueueManager struct {
 	maxRetries    int
 }
 
+// WorkerStatusInfo tracks detailed worker status during task processing
+type WorkerStatusInfo struct {
+	WorkerID  string
+	Status    string    // "waiting", "processing", "completed", "failed"
+	Progress  float64   // 0.0 to 1.0
+	Reasoning string    // Worker's reasoning/thinking process
+	Decision  string    // Worker's decision/answer
+	UpdatedAt time.Time
+}
+
 // NewQueueManager creates a new queue manager instance
 func NewQueueManager(poolManager *PoolManager) *QueueManager {
 	return &QueueManager{
-		instructions:  make([]*Instruction, 0),
-		poolManager:   poolManager,
-		taskResults:   make(map[string][]WorkerResult),
-		resultsChan:   make(chan TaskResult, 100),
-		consensusChan: make(chan *Instruction, 10),
-		retryHistory:  make(map[string]map[string]bool),
-		maxRetries:    3, // Maximum number of retry attempts
+		instructions:   make([]*Instruction, 0),
+		poolManager:    poolManager,
+		taskResults:    make(map[string][]WorkerResult),
+		workerStatuses: make(map[string]map[string]*WorkerStatusInfo),
+		resultsChan:    make(chan TaskResult, 100),
+		consensusChan:  make(chan *Instruction, 10),
+		retryHistory:   make(map[string]map[string]bool),
+		maxRetries:     3, // Maximum number of retry attempts
 	}
 }
 
@@ -57,6 +72,23 @@ func (qm *QueueManager) AddInstruction(instruction *Instruction) error {
 
 	qm.mu.Lock()
 	qm.instructions = append(qm.instructions, instruction)
+	
+	// Initialize worker statuses map early (before workers are assigned)
+	// Create placeholder statuses so API can return worker count immediately
+	if qm.workerStatuses[instruction.TaskID] == nil {
+		qm.workerStatuses[instruction.TaskID] = make(map[string]*WorkerStatusInfo)
+		// Create placeholder worker statuses based on expected worker count
+		// These will be updated with actual worker IDs when workers are assigned
+		for i := 0; i < instruction.WorkerCount; i++ {
+			workerID := fmt.Sprintf("worker-%d", i+1)
+			qm.workerStatuses[instruction.TaskID][workerID] = &WorkerStatusInfo{
+				WorkerID:  workerID,
+				Status:    "waiting",
+				Progress:  0.0,
+				UpdatedAt: time.Now(),
+			}
+		}
+	}
 	qm.mu.Unlock()
 
 	// Start processing the instruction
@@ -116,6 +148,8 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 
 // tryProcessInstruction attempts to process an instruction once
 func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCount int) bool {
+	log.Printf("[QueueManager] ===== Starting tryProcessInstruction for task %s (retry %d) =====", instruction.TaskID, retryCount)
+	
 	ctx, cancel := context.WithTimeout(context.Background(), instruction.Consensus.TimeoutDuration)
 	defer cancel()
 
@@ -126,11 +160,21 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	
 	qm.mu.RLock()
 	usedWorkers := qm.retryHistory[instruction.TaskID]
+	usedCount := len(usedWorkers)
 	qm.mu.RUnlock()
+	
+	log.Printf("[QueueManager] Task %s: Need %d workers, %d already used in previous attempts", instruction.TaskID, instruction.WorkerCount, usedCount)
 
+	log.Printf("[QueueManager] Attempting to get %d workers for task %s (retry %d)", instruction.WorkerCount, instruction.TaskID, retryCount)
+	
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Log worker pool status before getting workers
+		total, available := qm.poolManager.GetWorkerCount()
+		log.Printf("[QueueManager] Attempt %d: Pool has %d total workers, %d available (need %d)", attempt+1, total, available, instruction.WorkerCount)
+		
 		availableWorkers, getErr := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
 		if getErr != nil {
+			log.Printf("[QueueManager] GetAvailableWorkers failed: %v", getErr)
 			delay := time.Duration(1<<uint(attempt)) * baseDelay
 			if delay > 2*time.Second {
 				delay = 2 * time.Second
@@ -176,13 +220,19 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		for _, w := range availableWorkers {
 			if !usedWorkers[w.ID] {
 				workers = append(workers, w)
+				log.Printf("[QueueManager] Selected worker %s (status: %s)", w.ID, w.Status)
 				if len(workers) >= instruction.WorkerCount {
 					break
 				}
+			} else {
+				log.Printf("[QueueManager] Skipping previously used worker %s", w.ID)
 			}
 		}
 
+		log.Printf("[QueueManager] Selected %d workers out of %d available (need %d)", len(workers), len(availableWorkers), instruction.WorkerCount)
+		
 		if len(workers) >= instruction.WorkerCount {
+			log.Printf("[QueueManager] Successfully selected %d workers for task %s", len(workers), instruction.TaskID)
 			break
 		}
 
@@ -196,22 +246,110 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	}
 
 	if len(workers) < instruction.WorkerCount {
+		log.Printf("[QueueManager] Failed to get enough workers: have %d, need %d", len(workers), instruction.WorkerCount)
 		return false
 	}
+	
+	log.Printf("[QueueManager] Validating %d workers before assignment...", len(workers))
 
+	// Verify workers are actually available and connected before assigning
+	validWorkers := make([]*WorkerState, 0, len(workers))
+	for _, w := range workers {
+		// Check worker status
+		status, err := qm.poolManager.GetWorkerStatus(w.ID)
+		if err != nil {
+			log.Printf("[QueueManager] Worker %s status check failed: %v, skipping", w.ID, err)
+			continue
+		}
+		if status != "available" {
+			log.Printf("[QueueManager] Worker %s is not available (status: %s), skipping", w.ID, status)
+			continue
+		}
+		
+		// Verify worker connection exists
+		workerIDStr := w.ID[len("worker-"):]
+		var workerIndex int
+		if _, err := fmt.Sscanf(workerIDStr, "%d", &workerIndex); err != nil {
+			log.Printf("[QueueManager] Invalid worker ID format: %s, skipping", w.ID)
+			continue
+		}
+		workerIndex-- // Convert to 0-based
+		
+		qm.supervisor.mu.RLock()
+		if workerIndex >= len(qm.supervisor.workers) {
+			qm.supervisor.mu.RUnlock()
+			log.Printf("[QueueManager] Worker %s index out of range (%d >= %d), skipping", w.ID, workerIndex, len(qm.supervisor.workers))
+			continue
+		}
+		workerConn := qm.supervisor.workers[workerIndex]
+		qm.supervisor.mu.RUnlock()
+		
+		if workerConn.client == nil {
+			log.Printf("[QueueManager] Worker %s client is nil, skipping", w.ID)
+			continue
+		}
+		
+		validWorkers = append(validWorkers, w)
+		log.Printf("[QueueManager] Worker %s validated successfully", w.ID)
+	}
+	
+	// If we don't have enough valid workers, return false to retry
+	if len(validWorkers) < instruction.WorkerCount {
+		log.Printf("[QueueManager] Only %d valid workers out of %d needed (rejected %d), will retry", 
+			len(validWorkers), instruction.WorkerCount, len(workers)-len(validWorkers))
+		return false
+	}
+	
+	log.Printf("[QueueManager] All %d workers validated, proceeding with assignment", len(validWorkers))
+	
+	// Use only the valid workers (take first N if we have more)
+	if len(validWorkers) > instruction.WorkerCount {
+		validWorkers = validWorkers[:instruction.WorkerCount]
+	}
+	
 	// Mark selected workers as used and assign task
 	qm.mu.Lock()
-	for _, w := range workers {
+	for _, w := range validWorkers {
 		qm.retryHistory[instruction.TaskID][w.ID] = true
 		if err := qm.poolManager.AssignTaskToWorker(w.ID, instruction.TaskID); err != nil {
 			log.Printf("[QueueManager] Failed to assign task to worker %s: %v", w.ID, err)
+		} else {
+			log.Printf("[QueueManager] Successfully assigned task to worker %s", w.ID)
 		}
 	}
 	qm.mu.Unlock()
+	
+	// Update workers list to use only valid workers
+	workers = validWorkers
 
 	// Create a WaitGroup for worker results
 	var wg sync.WaitGroup
 	wg.Add(len(workers))
+
+	// Update worker statuses with actual assigned workers
+	// (Placeholder statuses were already created in AddInstruction)
+	qm.mu.Lock()
+	if qm.workerStatuses[instruction.TaskID] == nil {
+		qm.workerStatuses[instruction.TaskID] = make(map[string]*WorkerStatusInfo)
+	}
+	for _, worker := range workers {
+		// Update existing placeholder or create new status
+		if existing, exists := qm.workerStatuses[instruction.TaskID][worker.ID]; exists {
+			// Update existing placeholder
+			existing.Status = "waiting"
+			existing.Progress = 0.0
+			existing.UpdatedAt = time.Now()
+		} else {
+			// Create new status for this worker
+			qm.workerStatuses[instruction.TaskID][worker.ID] = &WorkerStatusInfo{
+				WorkerID:  worker.ID,
+				Status:    "waiting",
+				Progress:  0.0,
+				UpdatedAt: time.Now(),
+			}
+		}
+	}
+	qm.mu.Unlock()
 
 	// Process task with each worker
 	for _, worker := range workers {
@@ -223,19 +361,18 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 				}
 			}()
 
+			// Note: Worker is already validated and assigned before this goroutine starts
+			// The worker status is "busy" at this point, which is expected
+			// Update status to processing
+			qm.updateWorkerStatus(instruction.TaskID, w.ID, "processing", 0.1, "", "")
+			log.Printf("[QueueManager] Starting task processing for worker %s", w.ID)
+
 			result, err := qm.processTaskWithWorker(ctx, instruction, w)
 			if err != nil {
 				log.Printf("[QueueManager] Worker %s failed to process task: %v", w.ID, err)
+				qm.updateWorkerStatus(instruction.TaskID, w.ID, "failed", 0.0, "", err.Error())
 				return
 			}
-
-			qm.mu.Lock()
-			qm.taskResults[instruction.TaskID] = append(qm.taskResults[instruction.TaskID], WorkerResult{
-				WorkerID:    w.ID,
-				Response:    &WorkerResponse{},
-				VotingPower: w.VotingPower,
-				Timestamp:   time.Now(),
-			})
 
 			// Clean the response content (remove markdown code blocks if present)
 			cleanedResult := cleanJSONResponse(result)
@@ -243,11 +380,20 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			var response WorkerResponse
 			if err := json.Unmarshal([]byte(cleanedResult), &response); err != nil {
 				log.Printf("[QueueManager] Worker %s failed to parse response: %v", w.ID, err)
-				qm.mu.Unlock()
+				qm.updateWorkerStatus(instruction.TaskID, w.ID, "failed", 0.0, "", err.Error())
 				return
 			}
 
-			qm.taskResults[instruction.TaskID][len(qm.taskResults[instruction.TaskID])-1].Response = &response
+			// Update worker status with completed response
+			qm.updateWorkerStatus(instruction.TaskID, w.ID, "completed", 1.0, response.Reasoning, response.Decision)
+
+			qm.mu.Lock()
+			qm.taskResults[instruction.TaskID] = append(qm.taskResults[instruction.TaskID], WorkerResult{
+				WorkerID:    w.ID,
+				Response:    &response,
+				VotingPower: w.VotingPower,
+				Timestamp:   time.Now(),
+			})
 			qm.mu.Unlock()
 		}(worker)
 	}
@@ -262,10 +408,42 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	select {
 	case <-ctx.Done():
 		log.Printf("[QueueManager] Instruction %s timed out on retry %d", instruction.TaskID, retryCount)
+		// Mark any workers that didn't complete as failed
+		qm.mu.RLock()
+		for _, w := range workers {
+			statusInfo, exists := qm.workerStatuses[instruction.TaskID][w.ID]
+			if exists && statusInfo.Status != "completed" && statusInfo.Status != "failed" {
+				log.Printf("[QueueManager] Marking worker %s as failed due to timeout", w.ID)
+				qm.updateWorkerStatus(instruction.TaskID, w.ID, "failed", 0.0, "", "task timeout")
+			}
+		}
+		qm.mu.RUnlock()
 		// Force cleanup of any stuck workers
 		qm.poolManager.CleanupStaleWorkers()
 		return false
 	case <-done:
+		// Check if we have enough successful workers
+		qm.mu.RLock()
+		completedCount := 0
+		failedCount := 0
+		for _, w := range workers {
+			if statusInfo, exists := qm.workerStatuses[instruction.TaskID][w.ID]; exists {
+				if statusInfo.Status == "completed" {
+					completedCount++
+				} else if statusInfo.Status == "failed" {
+					failedCount++
+				}
+			}
+		}
+		qm.mu.RUnlock()
+		
+		log.Printf("[QueueManager] Workers completed: %d, failed: %d, total: %d", completedCount, failedCount, len(workers))
+		
+		if completedCount < instruction.WorkerCount {
+			log.Printf("[QueueManager] Not enough workers completed (%d/%d), cannot reach consensus", completedCount, instruction.WorkerCount)
+			return false
+		}
+		
 		consensus, result := qm.checkConsensus(instruction)
 		if consensus {
 			log.Printf("[QueueManager] Consensus reached for instruction %s on retry %d", instruction.TaskID, retryCount)
@@ -296,13 +474,27 @@ func (qm *QueueManager) processTaskWithWorker(ctx context.Context, instruction *
 	qm.supervisor.mu.RLock()
 	if workerIndex >= len(qm.supervisor.workers) {
 		qm.supervisor.mu.RUnlock()
-		return "", fmt.Errorf("worker index out of range: %d", workerIndex)
+		errMsg := fmt.Errorf("worker index out of range: %d (max: %d) for worker %s", workerIndex, len(qm.supervisor.workers), worker.ID)
+		log.Printf("[QueueManager] %v", errMsg)
+		return "", errMsg
 	}
 	workerConn := qm.supervisor.workers[workerIndex]
 	qm.supervisor.mu.RUnlock()
 
 	if workerConn.client == nil {
-		return "", fmt.Errorf("worker %s not connected", worker.ID)
+		errMsg := fmt.Errorf("worker %s (index %d) not connected - client is nil", worker.ID, workerIndex)
+		log.Printf("[QueueManager] %v", errMsg)
+		return "", errMsg
+	}
+
+	// Check connection state
+	if workerConn.conn != nil {
+		state := workerConn.conn.GetState()
+		if state != connectivity.Ready && state != connectivity.Idle {
+			errMsg := fmt.Errorf("worker %s connection not ready (state: %v)", worker.ID, state)
+			log.Printf("[QueueManager] %v", errMsg)
+			return "", errMsg
+		}
 	}
 
 	// Create stream for task processing
@@ -324,10 +516,18 @@ func (qm *QueueManager) processTaskWithWorker(ctx context.Context, instruction *
 
 		switch resp.Status {
 		case pb.WorkerStatus_COMPLETED:
+			// Try to extract reasoning and decision from result
+			var workerResp WorkerResponse
+			if json.Unmarshal([]byte(cleanJSONResponse(resp.Result)), &workerResp) == nil {
+				qm.updateWorkerStatus(instruction.TaskID, worker.ID, "completed", 1.0, workerResp.Reasoning, workerResp.Decision)
+			}
 			return resp.Result, nil
 		case pb.WorkerStatus_FAILED:
+			qm.updateWorkerStatus(instruction.TaskID, worker.ID, "failed", 0.0, "", resp.Error)
 			return "", fmt.Errorf(resp.Error)
 		case pb.WorkerStatus_PROCESSING:
+			// Update progress during processing
+			qm.updateWorkerStatus(instruction.TaskID, worker.ID, "processing", 0.5, "", "")
 			continue
 		default:
 			return "", fmt.Errorf("unknown status: %v", resp.Status)
@@ -887,6 +1087,55 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 	}
 
 	return false, ""
+}
+
+// updateWorkerStatus updates the status of a worker for a specific task
+func (qm *QueueManager) updateWorkerStatus(taskID, workerID, status string, progress float64, reasoning, decision string) {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+
+	if qm.workerStatuses[taskID] == nil {
+		qm.workerStatuses[taskID] = make(map[string]*WorkerStatusInfo)
+	}
+
+	if qm.workerStatuses[taskID][workerID] == nil {
+		qm.workerStatuses[taskID][workerID] = &WorkerStatusInfo{
+			WorkerID: workerID,
+		}
+	}
+
+	info := qm.workerStatuses[taskID][workerID]
+	info.Status = status
+	info.Progress = progress
+	info.UpdatedAt = time.Now()
+	if reasoning != "" {
+		info.Reasoning = reasoning
+	}
+	if decision != "" {
+		info.Decision = decision
+	}
+}
+
+// GetWorkerStatuses returns the current worker statuses for a task
+func (qm *QueueManager) GetWorkerStatuses(taskID string) []WorkerStatusInfo {
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
+
+	if qm.workerStatuses[taskID] == nil {
+		return []WorkerStatusInfo{}
+	}
+
+	statuses := make([]WorkerStatusInfo, 0, len(qm.workerStatuses[taskID]))
+	for _, info := range qm.workerStatuses[taskID] {
+		statuses = append(statuses, *info)
+	}
+
+	// Sort by worker ID to ensure consistent ordering
+	sort.Slice(statuses, func(i, j int) bool {
+		return statuses[i].WorkerID < statuses[j].WorkerID
+	})
+
+	return statuses
 }
 
 // parseNumericValue attempts to extract a numeric value from a string
