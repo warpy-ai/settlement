@@ -276,9 +276,12 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		workerIndex-- // Convert to 0-based
 		
 		qm.supervisor.mu.RLock()
-		if workerIndex >= len(qm.supervisor.workers) {
+		workersLen := len(qm.supervisor.workers)
+		if workerIndex >= workersLen || workerIndex < 0 {
 			qm.supervisor.mu.RUnlock()
-			log.Printf("[QueueManager] Worker %s index out of range (%d >= %d), skipping", w.ID, workerIndex, len(qm.supervisor.workers))
+			log.Printf("[QueueManager] Worker %s index out of range (%d not in [0, %d)), unregistering from pool", w.ID, workerIndex, workersLen)
+			// Worker was scaled down but still in pool - unregister it
+			qm.poolManager.UnregisterWorker(w.ID)
 			continue
 		}
 		workerConn := qm.supervisor.workers[workerIndex]

@@ -510,6 +510,11 @@ func (s *Supervisor) scaleWorkers(ctx context.Context, targetWorkers int) error 
 	// Scale down if needed
 	if targetWorkers < currentWorkers {
 		for i := currentWorkers - 1; i >= targetWorkers; i-- {
+			workerID := fmt.Sprintf("worker-%d", i+1)
+			// Unregister from pool manager first
+			s.poolManager.UnregisterWorker(workerID)
+			log.Printf("[Supervisor] Unregistered worker %s from pool", workerID)
+			
 			if s.workers[i].conn != nil {
 				s.workers[i].conn.Close()
 			}
