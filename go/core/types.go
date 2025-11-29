@@ -34,6 +34,7 @@ const (
 	ExactMatch    ConsensusStrategy = "exact_match"    // Responses must match exactly
 	SemanticMatch ConsensusStrategy = "semantic_match" // Responses are compared semantically
 	NumericMatch  ConsensusStrategy = "numeric_match"  // Numeric values within tolerance
+	MergeMatch    ConsensusStrategy = "merge_match"    // Merge all responses for subjective questions
 )
 
 // ConsensusConfig defines how consensus should be reached

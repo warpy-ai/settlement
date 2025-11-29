@@ -3,25 +3,34 @@ package core
 import (
 	"context"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 // CallOpenAIFunction sends a task to the OpenAI API
 func CallOpenAIFunction(ctx context.Context, task, apiKey string) (string, error) {
-	client := openai.NewClient(apiKey)
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+	)
 
-	resp, err := client.CreateChatCompletion(
+	resp, err := client.Chat.Completions.New(
 		ctx,
-		openai.ChatCompletionRequest{
-			Model: openai.GPT4,
-			Messages: []openai.ChatCompletionMessage{
+		openai.ChatCompletionNewParams{
+			Model: "gpt-4o",
+			Messages: []openai.ChatCompletionMessageParamUnion{
 				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: "You are an AI language model that processes tasks and returns clear, concise responses.",
+					OfSystem: &openai.ChatCompletionSystemMessageParam{
+						Content: openai.ChatCompletionSystemMessageParamContentUnion{
+							OfString: openai.String("You are an AI language model that processes tasks and returns clear, concise responses."),
+						},
+					},
 				},
 				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: task,
+					OfUser: &openai.ChatCompletionUserMessageParam{
+						Content: openai.ChatCompletionUserMessageParamContentUnion{
+							OfString: openai.String(task),
+						},
+					},
 				},
 			},
 		},

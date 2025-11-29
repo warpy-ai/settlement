@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 type TaskRequirements struct {
@@ -19,9 +21,37 @@ type TaskRequirements struct {
 	NumericTolerance float64           `json:"numeric_tolerance"`
 }
 
+// cleanJSONResponse removes markdown code blocks from the response
+func cleanJSONResponse(content string) string {
+	content = strings.TrimSpace(content)
+	
+	// Remove markdown code blocks (```json ... ``` or ``` ... ```)
+	if strings.HasPrefix(content, "```") {
+		// Find the first newline after ``` (or ```json, ```json, etc.)
+		lines := strings.Split(content, "\n")
+		if len(lines) > 0 {
+			// Skip the first line (which contains ``` or ```json)
+			if len(lines) > 1 {
+				content = strings.Join(lines[1:], "\n")
+			} else {
+				// Single line, just remove the ```
+				content = strings.TrimPrefix(content, "```")
+			}
+		}
+		
+		// Remove trailing ``` (might be on its own line or at end of last line)
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	
+	return strings.TrimSpace(content)
+}
+
 // AnalyzeTask uses OpenAI to determine task requirements
 func AnalyzeTask(ctx context.Context, task string, apiKey string) (*TaskRequirements, error) {
-	client := openai.NewClient(apiKey)
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+	)
 
 	systemPrompt := `You are a task analyzer that determines the requirements for processing a task in a multi-agent system.
 You must respond with ONLY a JSON object (no other text) containing these fields:
@@ -31,7 +61,7 @@ You must respond with ONLY a JSON object (no other text) containing these fields
     "complexity": <"low", "medium", or "high">,
     "priority": <integer 1-5, where 5 is highest>,
     "timeout_seconds": <integer between 30-300>,
-    "match_strategy": <"exact_match", "semantic_match", or "numeric_match">,
+    "match_strategy": <"exact_match", "semantic_match", "numeric_match", or "merge_match">,
     "numeric_tolerance": <float, e.g., 0.01 for calculations>
 }
 
@@ -39,6 +69,7 @@ Choose match_strategy based on task type:
 - exact_match: For tasks requiring exact matches (e.g., simple translations)
 - semantic_match: For tasks with potential wording variations (e.g., analysis, complex translations)
 - numeric_match: For calculations and numeric results
+- merge_match: For subjective questions with multiple valid answers (e.g., "who is the best...", "what is your opinion on...", "recommend...")
 
 Set numeric_tolerance based on precision requirements:
 - 0.01 for financial calculations
@@ -62,21 +93,27 @@ Example response:
     "numeric_tolerance": 0.1
 }`
 
-	resp, err := client.CreateChatCompletion(
+	resp, err := client.Chat.Completions.New(
 		ctx,
-		openai.ChatCompletionRequest{
-			Model: openai.GPT4,
-			Messages: []openai.ChatCompletionMessage{
+		openai.ChatCompletionNewParams{
+			Model: "gpt-4o",
+			Messages: []openai.ChatCompletionMessageParamUnion{
 				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: systemPrompt,
+					OfSystem: &openai.ChatCompletionSystemMessageParam{
+						Content: openai.ChatCompletionSystemMessageParamContentUnion{
+							OfString: openai.String(systemPrompt),
+						},
+					},
 				},
 				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: fmt.Sprintf("Analyze this task and respond with ONLY the JSON object: %s", task),
+					OfUser: &openai.ChatCompletionUserMessageParam{
+						Content: openai.ChatCompletionUserMessageParamContentUnion{
+							OfString: openai.String(fmt.Sprintf("Analyze this task and respond with ONLY the JSON object: %s", task)),
+						},
+					},
 				},
 			},
-			Temperature: 0.1, // Lower temperature for more consistent responses
+			Temperature: openai.Float(0.1), // Lower temperature for more consistent responses
 		},
 	)
 
@@ -84,8 +121,11 @@ Example response:
 		return nil, fmt.Errorf("OpenAI API error: %v", err)
 	}
 
+	// Clean the response content (remove markdown code blocks if present)
+	cleanedContent := cleanJSONResponse(resp.Choices[0].Message.Content)
+
 	var requirements TaskRequirements
-	if err := json.Unmarshal([]byte(resp.Choices[0].Message.Content), &requirements); err != nil {
+	if err := json.Unmarshal([]byte(cleanedContent), &requirements); err != nil {
 		return nil, fmt.Errorf("failed to parse requirements: %v\nResponse: %s", err, resp.Choices[0].Message.Content)
 	}
 
@@ -130,7 +170,7 @@ func validateRequirements(req *TaskRequirements) error {
 	}
 
 	switch req.MatchStrategy {
-	case ExactMatch, SemanticMatch, NumericMatch:
+	case ExactMatch, SemanticMatch, NumericMatch, MergeMatch:
 		// Valid strategy
 	default:
 		return fmt.Errorf("invalid match strategy: %s", req.MatchStrategy)

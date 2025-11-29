@@ -64,13 +64,15 @@ Your response must be a JSON object with the following structure:
     "alternatives": ["alternative1", "alternative2"]
 }
 
+IMPORTANT: Be decisive and direct. When asked "who is the best" or similar questions, provide a CLEAR, DEFINITIVE answer. Do not hedge or say "it depends" - make a decision based on the most common criteria (e.g., achievements, statistics, impact). Pick ONE answer.
+
 For translations:
 - decision: the translated text
 - metadata: source_language, target_language, formality_level
 - alternatives: alternative translations
 
 For analysis:
-- decision: clear, concise conclusion
+- decision: clear, concise conclusion - be definitive
 - metadata: key_factors, data_sources, confidence_factors
 - alternatives: alternative viewpoints
 
@@ -94,9 +96,12 @@ Respond ONLY with the JSON object, no other text.`, category, category)
 	}
 	log.Printf("[Worker %d] Result: %s", s.workerID, result)
 
+	// Clean the response content (remove markdown code blocks if present)
+	cleanedResult := cleanJSONResponse(result)
+
 	// Parse the response
 	var response WorkerResponse
-	if err := json.Unmarshal([]byte(result), &response); err != nil {
+	if err := json.Unmarshal([]byte(cleanedResult), &response); err != nil {
 		errMsg := fmt.Sprintf("Worker %d failed to parse response: %v", s.workerID, err)
 		stream.Send(&pb.TaskResponse{
 			TaskId: req.TaskId,
