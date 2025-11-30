@@ -59,6 +59,8 @@ type WorkerState struct {
 	CurrentTaskID string
 	VotingPower   float64
 	LastHeartbeat time.Time
+	Provider      string // LLM provider (openai, anthropic, google, cohere, mistral)
+	Model         string // LLM model name
 }
 
 // TaskQueue manages pending instructions

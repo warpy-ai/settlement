@@ -24,6 +24,11 @@ func NewPoolManager() *PoolManager {
 
 // RegisterWorker adds a new worker to the pool
 func (pm *PoolManager) RegisterWorker(workerID string, votingPower float64) {
+	pm.RegisterWorkerWithModel(workerID, votingPower, "", "")
+}
+
+// RegisterWorkerWithModel adds a new worker to the pool with provider/model info
+func (pm *PoolManager) RegisterWorkerWithModel(workerID string, votingPower float64, provider, model string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -32,8 +37,10 @@ func (pm *PoolManager) RegisterWorker(workerID string, votingPower float64) {
 		Status:        "available",
 		VotingPower:   votingPower,
 		LastHeartbeat: time.Now(),
+		Provider:      provider,
+		Model:         model,
 	}
-	log.Printf("Worker %s registered with voting power %.2f", workerID, votingPower)
+	log.Printf("Worker %s registered with voting power %.2f, provider: %s, model: %s", workerID, votingPower, provider, model)
 }
 
 // UnregisterWorker removes a worker from the pool
@@ -159,6 +166,19 @@ func (pm *PoolManager) GetWorkerStatus(workerID string) (string, error) {
 	}
 
 	return worker.Status, nil
+}
+
+// GetWorkerByID returns the worker state for a given worker ID
+func (pm *PoolManager) GetWorkerByID(workerID string) (*WorkerState, error) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	worker, exists := pm.workers[workerID]
+	if !exists {
+		return nil, fmt.Errorf("worker %s not found", workerID)
+	}
+
+	return worker, nil
 }
 
 // GetWorkerCount returns the total number of workers and number of available workers

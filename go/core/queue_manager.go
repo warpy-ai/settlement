@@ -38,6 +38,8 @@ type WorkerStatusInfo struct {
 	Progress  float64   // 0.0 to 1.0
 	Reasoning string    // Worker's reasoning/thinking process
 	Decision  string    // Worker's decision/answer
+	Provider  string    // LLM provider (openai, anthropic, google, cohere, mistral)
+	Model    string    // LLM model name
 	UpdatedAt time.Time
 }
 
@@ -342,12 +344,21 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			existing.Status = "waiting"
 			existing.Progress = 0.0
 			existing.UpdatedAt = time.Now()
+			// Update provider/model if available
+			if worker.Provider != "" {
+				existing.Provider = worker.Provider
+			}
+			if worker.Model != "" {
+				existing.Model = worker.Model
+			}
 		} else {
 			// Create new status for this worker
 			qm.workerStatuses[instruction.TaskID][worker.ID] = &WorkerStatusInfo{
 				WorkerID:  worker.ID,
 				Status:    "waiting",
 				Progress:  0.0,
+				Provider:  worker.Provider,
+				Model:     worker.Model,
 				UpdatedAt: time.Now(),
 			}
 		}
@@ -1106,8 +1117,20 @@ func (qm *QueueManager) updateWorkerStatus(taskID, workerID, status string, prog
 	}
 
 	if qm.workerStatuses[taskID][workerID] == nil {
+		// Try to get provider/model from pool manager
+		provider := ""
+		model := ""
+		if qm.poolManager != nil {
+			if workerState, err := qm.poolManager.GetWorkerByID(workerID); err == nil {
+				provider = workerState.Provider
+				model = workerState.Model
+			}
+		}
+		
 		qm.workerStatuses[taskID][workerID] = &WorkerStatusInfo{
 			WorkerID: workerID,
+			Provider: provider,
+			Model:    model,
 		}
 	}
 
@@ -1120,6 +1143,18 @@ func (qm *QueueManager) updateWorkerStatus(taskID, workerID, status string, prog
 	}
 	if decision != "" {
 		info.Decision = decision
+	}
+	
+	// Update provider/model if not set and we can get it from pool manager
+	if (info.Provider == "" || info.Model == "") && qm.poolManager != nil {
+		if workerState, err := qm.poolManager.GetWorkerByID(workerID); err == nil {
+			if info.Provider == "" {
+				info.Provider = workerState.Provider
+			}
+			if info.Model == "" {
+				info.Model = workerState.Model
+			}
+		}
 	}
 }
 

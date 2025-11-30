@@ -83,6 +83,8 @@ type WorkerStatus struct {
 	Progress  float64   `json:"progress"`   // 0.0 to 1.0
 	Reasoning string    `json:"reasoning,omitempty"` // Worker's reasoning/thinking process
 	Decision  string    `json:"decision,omitempty"`   // Worker's decision/answer
+	Provider  string    `json:"provider,omitempty"`   // LLM provider (openai, anthropic, google, cohere, mistral)
+	Model     string    `json:"model,omitempty"`      // LLM model name
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

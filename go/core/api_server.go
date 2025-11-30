@@ -291,12 +291,30 @@ func (s *APIServer) handleGetTaskStatus(w http.ResponseWriter, r *http.Request) 
 		workerStatusInfos := s.supervisor.queueManager.GetWorkerStatuses(taskID)
 		workerStatuses := make([]WorkerStatus, 0, len(workerStatusInfos))
 		for _, info := range workerStatusInfos {
+			// Get provider/model from worker state if available
+			provider := info.Provider
+			model := info.Model
+			
+			// If not in status info, try to get from pool manager
+			if provider == "" || model == "" {
+				if workerState, err := s.supervisor.poolManager.GetWorkerByID(info.WorkerID); err == nil {
+					if provider == "" {
+						provider = workerState.Provider
+					}
+					if model == "" {
+						model = workerState.Model
+					}
+				}
+			}
+			
 			workerStatuses = append(workerStatuses, WorkerStatus{
 				WorkerID:  info.WorkerID,
 				Status:    info.Status,
 				Progress:  info.Progress,
 				Reasoning: info.Reasoning,
 				Decision:  info.Decision,
+				Provider:  provider,
+				Model:     model,
 				UpdatedAt: info.UpdatedAt,
 			})
 		}
