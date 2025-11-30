@@ -36,9 +36,10 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // TaskSubmission represents a task submission request
 type TaskSubmission struct {
-	Content     string           `json:"content"`     // The actual task content
-	Rules       *TaskRules       `json:"rules"`       // Optional rules for task processing
-	Constraints *TaskConstraints `json:"constraints"` // Optional processing constraints
+	Content     string           `json:"content"`      // The actual task content
+	Rules       *TaskRules       `json:"rules"`        // Optional rules for task processing
+	Constraints *TaskConstraints `json:"constraints"`   // Optional processing constraints
+	LLMProvider *string          `json:"llm_provider"` // Optional LLM provider override: "openai", "anthropic", "google", "cohere", "mistral"
 }
 
 // TaskRules defines specific rules for task processing

@@ -50,10 +50,11 @@ type Supervisor struct {
 
 // SupervisorConfig holds configuration for the supervisor
 type SupervisorConfig struct {
-	NumWorkers int
-	MaxWorkers int // Maximum number of workers allowed
-	APIKey     string
-	WorkDir    string
+	NumWorkers  int
+	MaxWorkers  int    // Maximum number of workers allowed
+	APIKey      string
+	WorkDir     string
+	LLMProvider string // LLM provider: "openai", "anthropic", "google", "cohere", "mistral"
 }
 
 // Update NewSupervisor function

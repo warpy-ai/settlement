@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
+	"settlement-core/llm-client"
 )
 
 type TaskRequirements struct {
@@ -47,11 +47,19 @@ func cleanJSONResponse(content string) string {
 	return strings.TrimSpace(content)
 }
 
-// AnalyzeTask uses OpenAI to determine task requirements
+// AnalyzeTask uses LLM to determine task requirements
 func AnalyzeTask(ctx context.Context, task string, apiKey string) (*TaskRequirements, error) {
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
-	)
+	// Get provider from environment or default to OpenAI
+	provider := os.Getenv("LLM_PROVIDER")
+	if provider == "" {
+		provider = "openai"
+	}
+
+	// Create LLM client
+	llmClient, err := llmclient.NewLLMClient(provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM client: %v", err)
+	}
 
 	systemPrompt := `You are a task analyzer that determines the requirements for processing a task in a multi-agent system.
 You must respond with ONLY a JSON object (no other text) containing these fields:
@@ -93,45 +101,24 @@ Example response:
     "numeric_tolerance": 0.1
 }`
 
-	resp, err := client.Chat.Completions.New(
-		ctx,
-		openai.ChatCompletionNewParams{
-			Model: "gpt-4o",
-			Messages: []openai.ChatCompletionMessageParamUnion{
-				{
-					OfSystem: &openai.ChatCompletionSystemMessageParam{
-						Content: openai.ChatCompletionSystemMessageParamContentUnion{
-							OfString: openai.String(systemPrompt),
-						},
-					},
-				},
-				{
-					OfUser: &openai.ChatCompletionUserMessageParam{
-						Content: openai.ChatCompletionUserMessageParamContentUnion{
-							OfString: openai.String(fmt.Sprintf("Analyze this task and respond with ONLY the JSON object: %s", task)),
-						},
-					},
-				},
-			},
-			Temperature: openai.Float(0.1), // Lower temperature for more consistent responses
-		},
-	)
+	userMessage := fmt.Sprintf("Analyze this task and respond with ONLY the JSON object: %s", task)
 
+	resp, err := llmClient.Call(ctx, systemPrompt, userMessage, apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI API error: %v", err)
+		return nil, fmt.Errorf("LLM API error: %v", err)
 	}
 
 	// Clean the response content (remove markdown code blocks if present)
-	cleanedContent := cleanJSONResponse(resp.Choices[0].Message.Content)
+	cleanedContent := cleanJSONResponse(resp)
 
 	var requirements TaskRequirements
 	if err := json.Unmarshal([]byte(cleanedContent), &requirements); err != nil {
-		return nil, fmt.Errorf("failed to parse requirements: %v\nResponse: %s", err, resp.Choices[0].Message.Content)
+		return nil, fmt.Errorf("failed to parse requirements: %v\nResponse: %s", err, resp)
 	}
 
 	// Validate requirements
 	if err := validateRequirements(&requirements); err != nil {
-		return nil, fmt.Errorf("invalid requirements: %v\nResponse: %s", err, resp.Choices[0].Message.Content)
+		return nil, fmt.Errorf("invalid requirements: %v\nResponse: %s", err, resp)
 	}
 
 	log.Printf("[TaskAnalyzer] Task analyzed: workers=%d, agreement=%.2f, complexity=%s, priority=%d, timeout=%ds, strategy=%s",

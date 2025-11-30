@@ -646,8 +646,10 @@ func (qm *QueueManager) mergeConsensus(results []WorkerResult, instruction *Inst
 		}
 
 		// Skip rate-limited responses
-		if result.Response.Metadata != nil && strings.Contains(result.Response.Metadata["error"], "Rate limit reached") {
-			continue
+		if result.Response.Metadata != nil {
+			if errorVal, ok := result.Response.Metadata["error"].(string); ok && strings.Contains(errorVal, "Rate limit reached") {
+				continue
+			}
 		}
 
 		validResponses = append(validResponses, &result)
@@ -797,11 +799,11 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 		Confidence: avgConfidence,
 		Category:   mostCommonCategory,
 		Reasoning:  mergedReasoning,
-		Metadata: map[string]string{
+		Metadata: map[string]interface{}{
 			"consensus_strategy": "merge_match",
-			"worker_count":       fmt.Sprintf("%d", len(validResponses)),
+			"worker_count":       len(validResponses),
 			"synthesis_type":     synthesisType,
-			"vote_percentage":    fmt.Sprintf("%.1f", (maxVotes/totalVotes)*100),
+			"vote_percentage":    (maxVotes / totalVotes) * 100,
 		},
 		Alternatives: alternatives,
 	}
@@ -874,9 +876,9 @@ func (qm *QueueManager) fallbackMergeConsensus(validResponses []*WorkerResult, a
 		Confidence: avgConfidence,
 		Category:   mostCommonCategory,
 		Reasoning:  fmt.Sprintf("Consensus synthesized from %d workers (fallback merge)", len(validResponses)),
-		Metadata: map[string]string{
+		Metadata: map[string]interface{}{
 			"consensus_strategy": "merge_match",
-			"worker_count":       fmt.Sprintf("%d", len(validResponses)),
+			"worker_count":       len(validResponses),
 			"synthesis_type":     "fallback",
 		},
 		Alternatives: alternatives,
@@ -924,9 +926,11 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 		}
 
 		// Check for rate limit errors
-		if result.Response.Metadata != nil && strings.Contains(result.Response.Metadata["error"], "Rate limit reached") {
-			rateLimitedCount++
-			continue
+		if result.Response.Metadata != nil {
+			if errorVal, ok := result.Response.Metadata["error"].(string); ok && strings.Contains(errorVal, "Rate limit reached") {
+				rateLimitedCount++
+				continue
+			}
 		}
 
 		key := result.Response.Decision
@@ -1058,14 +1062,14 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 			Category:   bestGroup.responses[0].Response.Category,
 			Reasoning: fmt.Sprintf("Consensus reached with %.2f%% agreement among %d workers (lead: %.2f%%)",
 				highestVotes*100, len(bestGroup.responses), voteDifference*100),
-			Metadata: map[string]string{
+			Metadata: map[string]interface{}{
 				"consensus_strategy":  string(instruction.Consensus.MatchStrategy),
-				"worker_count":        fmt.Sprintf("%d", len(results)),
-				"agreeing_workers":    fmt.Sprintf("%d", len(bestGroup.responses)),
-				"agreement_threshold": fmt.Sprintf("%.2f", adjustedMinAgreement),
-				"actual_agreement":    fmt.Sprintf("%.2f", highestVotes),
-				"vote_difference":     fmt.Sprintf("%.2f", voteDifference),
-				"total_groups":        fmt.Sprintf("%d", len(groups)),
+				"worker_count":        len(results),
+				"agreeing_workers":    len(bestGroup.responses),
+				"agreement_threshold": adjustedMinAgreement,
+				"actual_agreement":    highestVotes,
+				"vote_difference":     voteDifference,
+				"total_groups":        len(groups),
 			},
 		}
 

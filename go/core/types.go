@@ -22,9 +22,9 @@ type WorkerResponse struct {
 	Category   string  `json:"category"`   // Type of task (translation, analysis, calculation, etc.)
 
 	// Supporting information that doesn't need to match for consensus
-	Reasoning    string            `json:"reasoning"`    // Explanation of how the decision was reached
-	Metadata     map[string]string `json:"metadata"`     // Additional task-specific metadata
-	Alternatives []string          `json:"alternatives"` // Alternative answers considered
+	Reasoning    string                 `json:"reasoning"`    // Explanation of how the decision was reached
+	Metadata     map[string]interface{} `json:"metadata"`       // Additional task-specific metadata (can contain strings, numbers, etc.)
+	Alternatives []string               `json:"alternatives"`  // Alternative answers considered
 }
 
 // ConsensusStrategy defines how to compare worker responses
