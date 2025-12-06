@@ -804,7 +804,23 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 	if !useVoting {
 		synthesisType = "ai_synthesized"
 	}
-	
+
+	// Start parallel extraction of merged reasoning if enabled
+	var mergedReasoningChan chan *MergedReasoning
+	if instruction.Consensus.ExtractMergedReasoning && len(validResponses) > 1 {
+		mergedReasoningChan = make(chan *MergedReasoning, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			mergedReasoningChan <- qm.extractMergedReasoning(
+				ctx,
+				validResponses,
+				instruction.Content,
+				bestDecision,
+			)
+		}()
+	}
+
 	consensusResponse := &WorkerResponse{
 		Decision:   bestDecision,
 		Confidence: avgConfidence,
@@ -817,6 +833,16 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 			"vote_percentage":    (maxVotes / totalVotes) * 100,
 		},
 		Alternatives: alternatives,
+	}
+
+	// Wait for merged reasoning extraction with timeout
+	if mergedReasoningChan != nil {
+		select {
+		case extracted := <-mergedReasoningChan:
+			consensusResponse.MergedReasoning = extracted
+		case <-time.After(5 * time.Second):
+			log.Printf("[QueueManager] Merged reasoning extraction timed out in mergeConsensus")
+		}
 	}
 
 	resultBytes, err := json.Marshal(consensusResponse)
@@ -895,12 +921,261 @@ func (qm *QueueManager) fallbackMergeConsensus(validResponses []*WorkerResult, a
 		Alternatives: alternatives,
 	}
 
+	// Extract merged reasoning using algorithmic method only (fast fallback)
+	if instruction.Consensus.ExtractMergedReasoning && len(validResponses) > 1 {
+		if extracted, err := qm.extractMergedReasoningAlgorithmic(validResponses); err == nil {
+			consensusResponse.MergedReasoning = extracted
+		}
+	}
+
 	resultBytes, err := json.Marshal(consensusResponse)
 	if err != nil {
 		return false, ""
 	}
 
 	return true, string(resultBytes)
+}
+
+// splitIntoSentences splits text into sentences for reasoning extraction
+func splitIntoSentences(text string) []string {
+	// Simple sentence splitting on common delimiters
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+
+	// Replace common sentence-ending patterns with a delimiter
+	delimiters := []string{". ", "! ", "? ", ".\n", "!\n", "?\n"}
+	for _, d := range delimiters {
+		text = strings.ReplaceAll(text, d, "|||")
+	}
+
+	parts := strings.Split(text, "|||")
+	sentences := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) > 10 { // Skip very short fragments
+			sentences = append(sentences, part)
+		}
+	}
+	return sentences
+}
+
+// extractMergedReasoningAlgorithmic extracts unique reasoning contributions using text analysis
+func (qm *QueueManager) extractMergedReasoningAlgorithmic(workers []*WorkerResult) (*MergedReasoning, error) {
+	if len(workers) == 0 {
+		return nil, fmt.Errorf("no workers provided")
+	}
+
+	contributions := make([]ReasoningContribution, 0)
+	allSentences := make([]string, 0) // Track all sentences to check for uniqueness
+	order := 1
+
+	// Process each worker's reasoning
+	for _, worker := range workers {
+		if worker.Response == nil || worker.Response.Reasoning == "" {
+			continue
+		}
+
+		sentences := splitIntoSentences(worker.Response.Reasoning)
+		if len(sentences) == 0 {
+			continue
+		}
+
+		// Find the most unique sentence from this worker
+		var bestSentence string
+		var bestUniqueness float64 = 0
+
+		for _, sentence := range sentences {
+			normalized := normalizeText(sentence)
+			if normalized == "" {
+				continue
+			}
+
+			// Calculate uniqueness as 1 - max similarity to existing sentences
+			uniqueness := 1.0
+			for _, existing := range allSentences {
+				similarity := calculateSimilarity(normalized, existing)
+				if 1-similarity < uniqueness {
+					uniqueness = 1 - similarity
+				}
+			}
+
+			// Prefer longer, more unique sentences
+			lengthBonus := float64(len(sentence)) / 200.0 // Bonus for length up to 200 chars
+			if lengthBonus > 0.3 {
+				lengthBonus = 0.3
+			}
+			score := uniqueness + lengthBonus
+
+			if score > bestUniqueness {
+				bestUniqueness = score
+				bestSentence = sentence
+			}
+		}
+
+		// Add the best unique sentence if it's sufficiently unique (> 0.4 uniqueness)
+		if bestSentence != "" && bestUniqueness > 0.4 {
+			contributions = append(contributions, ReasoningContribution{
+				WorkerID:   worker.WorkerID,
+				Text:       bestSentence,
+				Confidence: worker.Response.Confidence,
+				Order:      order,
+			})
+			allSentences = append(allSentences, normalizeText(bestSentence))
+			order++
+		}
+	}
+
+	// Build summary from contributions
+	var summaryBuilder strings.Builder
+	for i, contrib := range contributions {
+		if i > 0 {
+			summaryBuilder.WriteString(" ")
+		}
+		summaryBuilder.WriteString(contrib.Text)
+		if !strings.HasSuffix(contrib.Text, ".") && !strings.HasSuffix(contrib.Text, "!") && !strings.HasSuffix(contrib.Text, "?") {
+			summaryBuilder.WriteString(".")
+		}
+		if i >= 2 { // Limit summary to first 3 contributions
+			break
+		}
+	}
+
+	return &MergedReasoning{
+		Summary:       summaryBuilder.String(),
+		Contributions: contributions,
+		WorkerCount:   len(workers),
+		SynthesisType: "algorithmic",
+	}, nil
+}
+
+// extractMergedReasoningAI uses LLM to extract and merge the best reasoning pieces
+func (qm *QueueManager) extractMergedReasoningAI(ctx context.Context, workers []*WorkerResult, question, decision string) (*MergedReasoning, error) {
+	if qm.supervisor == nil || qm.supervisor.apiKey == "" {
+		return nil, fmt.Errorf("no API key available for AI extraction")
+	}
+
+	// Build prompt with worker reasonings
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString("You are analyzing reasoning from multiple AI workers who agreed on the same answer.\n\n")
+	promptBuilder.WriteString(fmt.Sprintf("Question: %s\n", question))
+	promptBuilder.WriteString(fmt.Sprintf("Agreed Answer: %s\n\n", decision))
+	promptBuilder.WriteString("Worker Reasonings:\n")
+
+	for _, worker := range workers {
+		if worker.Response == nil || worker.Response.Reasoning == "" {
+			continue
+		}
+		promptBuilder.WriteString(fmt.Sprintf("[%s (confidence: %.2f)]:\n%s\n\n",
+			worker.WorkerID, worker.Response.Confidence, worker.Response.Reasoning))
+	}
+
+	promptBuilder.WriteString(`Extract the most valuable unique insights from each worker.
+Return ONLY valid JSON with this structure:
+{
+  "summary": "2-3 sentence unified summary of the collective reasoning",
+  "contributions": [
+    {"worker_id": "worker-id", "text": "specific unique insight from this worker", "order": 1}
+  ]
+}
+
+Rules:
+- Include only unique insights that add value (avoid redundancy)
+- Each worker should contribute at most 1-2 key insights
+- Order contributions by importance`)
+
+	// Call OpenAI for synthesis
+	response, err := CallOpenAIFunction(ctx, promptBuilder.String(), qm.supervisor.apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("AI extraction failed: %w", err)
+	}
+
+	// Parse the JSON response
+	response = cleanJSONResponse(response)
+
+	var aiResult struct {
+		Summary       string `json:"summary"`
+		Contributions []struct {
+			WorkerID string `json:"worker_id"`
+			Text     string `json:"text"`
+			Order    int    `json:"order"`
+		} `json:"contributions"`
+	}
+
+	if err := json.Unmarshal([]byte(response), &aiResult); err != nil {
+		return nil, fmt.Errorf("failed to parse AI response: %w", err)
+	}
+
+	// Build worker confidence map for lookup
+	confidenceMap := make(map[string]float64)
+	for _, worker := range workers {
+		if worker.Response != nil {
+			confidenceMap[worker.WorkerID] = worker.Response.Confidence
+		}
+	}
+
+	// Convert to MergedReasoning
+	contributions := make([]ReasoningContribution, 0, len(aiResult.Contributions))
+	for _, c := range aiResult.Contributions {
+		contributions = append(contributions, ReasoningContribution{
+			WorkerID:   c.WorkerID,
+			Text:       c.Text,
+			Confidence: confidenceMap[c.WorkerID],
+			Order:      c.Order,
+		})
+	}
+
+	return &MergedReasoning{
+		Summary:       aiResult.Summary,
+		Contributions: contributions,
+		WorkerCount:   len(workers),
+		SynthesisType: "ai",
+	}, nil
+}
+
+// isLowQualityMergedReasoning checks if the algorithmic result needs AI fallback
+func isLowQualityMergedReasoning(result *MergedReasoning) bool {
+	if result == nil {
+		return true
+	}
+	// Low quality if less than 2 contributions or short summary
+	if len(result.Contributions) < 2 {
+		return true
+	}
+	if len(result.Summary) < 50 {
+		return true
+	}
+	// Check for empty contributions
+	for _, c := range result.Contributions {
+		if c.Text == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractMergedReasoning extracts merged reasoning using algorithm-first with AI fallback
+func (qm *QueueManager) extractMergedReasoning(ctx context.Context, workers []*WorkerResult, question, decision string) *MergedReasoning {
+	// Try algorithmic extraction first
+	result, err := qm.extractMergedReasoningAlgorithmic(workers)
+	if err != nil {
+		log.Printf("[QueueManager] Algorithmic reasoning extraction failed: %v", err)
+	}
+
+	// Check quality and fall back to AI if needed
+	if isLowQualityMergedReasoning(result) {
+		log.Printf("[QueueManager] Algorithmic result low quality, trying AI extraction")
+		aiResult, err := qm.extractMergedReasoningAI(ctx, workers, question, decision)
+		if err != nil {
+			log.Printf("[QueueManager] AI reasoning extraction failed: %v", err)
+			// Return algorithmic result even if low quality (graceful degradation)
+			return result
+		}
+		return aiResult
+	}
+
+	return result
 }
 
 // checkConsensus determines if workers have reached consensus on a task
@@ -1067,6 +1342,22 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 
 	// Accept the result if it meets the minimum agreement OR has a significant lead
 	if highestVotes >= adjustedMinAgreement || hasSignificantLead {
+		// Start parallel extraction of merged reasoning if enabled
+		var mergedReasoningChan chan *MergedReasoning
+		if instruction.Consensus.ExtractMergedReasoning && len(bestGroup.responses) > 1 {
+			mergedReasoningChan = make(chan *MergedReasoning, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				mergedReasoningChan <- qm.extractMergedReasoning(
+					ctx,
+					bestGroup.responses,
+					instruction.Content,
+					bestResult,
+				)
+			}()
+		}
+
 		consensusResponse := &WorkerResponse{
 			Decision:   bestResult,
 			Confidence: bestGroup.confidence,
@@ -1092,6 +1383,16 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 					fmt.Sprintf("%s (%.2f%% agreement, confidence: %.2f)",
 						decision, (group.totalVotes/totalVotingPower)*100, group.confidence),
 				)
+			}
+		}
+
+		// Wait for merged reasoning extraction with timeout
+		if mergedReasoningChan != nil {
+			select {
+			case merged := <-mergedReasoningChan:
+				consensusResponse.MergedReasoning = merged
+			case <-time.After(5 * time.Second):
+				log.Printf("[QueueManager] Merged reasoning extraction timed out")
 			}
 		}
 

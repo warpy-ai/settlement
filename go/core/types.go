@@ -22,9 +22,26 @@ type WorkerResponse struct {
 	Category   string  `json:"category"`   // Type of task (translation, analysis, calculation, etc.)
 
 	// Supporting information that doesn't need to match for consensus
-	Reasoning    string                 `json:"reasoning"`    // Explanation of how the decision was reached
-	Metadata     map[string]interface{} `json:"metadata"`       // Additional task-specific metadata (can contain strings, numbers, etc.)
-	Alternatives []string               `json:"alternatives"`  // Alternative answers considered
+	Reasoning       string                 `json:"reasoning"`                  // Explanation of how the decision was reached
+	Metadata        map[string]interface{} `json:"metadata"`                   // Additional task-specific metadata (can contain strings, numbers, etc.)
+	Alternatives    []string               `json:"alternatives"`               // Alternative answers considered
+	MergedReasoning *MergedReasoning       `json:"merged_reasoning,omitempty"` // Synthesized reasoning from agreeable workers
+}
+
+// ReasoningContribution represents an attributed piece of merged reasoning
+type ReasoningContribution struct {
+	WorkerID   string  `json:"worker_id"`  // Source worker identifier
+	Text       string  `json:"text"`       // The reasoning excerpt
+	Confidence float64 `json:"confidence"` // Worker's confidence when making this contribution
+	Order      int     `json:"order"`      // Position in the merged narrative (1-based)
+}
+
+// MergedReasoning contains synthesized reasoning from agreeable workers
+type MergedReasoning struct {
+	Summary       string                  `json:"summary"`        // Unified narrative summary
+	Contributions []ReasoningContribution `json:"contributions"`  // Attributed pieces from each worker
+	WorkerCount   int                     `json:"worker_count"`   // Number of workers that contributed
+	SynthesisType string                  `json:"synthesis_type"` // "ai" or "algorithmic"
 }
 
 // ConsensusStrategy defines how to compare worker responses
@@ -39,11 +56,12 @@ const (
 
 // ConsensusConfig defines how consensus should be reached
 type ConsensusConfig struct {
-	MinimumAgreement float64 // Minimum percentage needed for consensus
-	TimeoutDuration  time.Duration
-	VotingStrategy   string            // e.g., "majority", "weighted"
-	MatchStrategy    ConsensusStrategy // How to compare responses
-	NumericTolerance float64           // For numeric comparisons, the acceptable difference
+	MinimumAgreement       float64           // Minimum percentage needed for consensus
+	TimeoutDuration        time.Duration
+	VotingStrategy         string            // e.g., "majority", "weighted"
+	MatchStrategy          ConsensusStrategy // How to compare responses
+	NumericTolerance       float64           // For numeric comparisons, the acceptable difference
+	ExtractMergedReasoning bool              // Whether to extract and merge reasoning from agreeable workers
 }
 
 // WorkerPool manages available workers and their states
