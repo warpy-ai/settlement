@@ -198,11 +198,12 @@ func (s *APIServer) processTask(taskID string, submission *TaskSubmission) {
 		Content:     submission.Content,
 		WorkerCount: requirements.WorkerCount,
 		Consensus: ConsensusConfig{
-			MinimumAgreement: requirements.MinimumAgreement,
-			TimeoutDuration:  time.Duration(requirements.TimeoutSeconds) * time.Second,
-			VotingStrategy:   "majority",
-			MatchStrategy:    requirements.MatchStrategy,
-			NumericTolerance: requirements.NumericTolerance,
+			MinimumAgreement:       requirements.MinimumAgreement,
+			TimeoutDuration:        time.Duration(requirements.TimeoutSeconds) * time.Second,
+			VotingStrategy:         "majority",
+			MatchStrategy:          requirements.MatchStrategy,
+			NumericTolerance:       requirements.NumericTolerance,
+			ExtractMergedReasoning: true, // Always extract conversational response
 		},
 	}
 

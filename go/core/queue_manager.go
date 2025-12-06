@@ -17,29 +17,31 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
+const mergedReasoningTimeout = 15 * time.Second
+
 // QueueManager handles the instruction queue and task distribution
 type QueueManager struct {
-	mu            sync.RWMutex
-	instructions  []*Instruction
-	poolManager   *PoolManager
-	taskResults   map[string][]WorkerResult
+	mu             sync.RWMutex
+	instructions   []*Instruction
+	poolManager    *PoolManager
+	taskResults    map[string][]WorkerResult
 	workerStatuses map[string]map[string]*WorkerStatusInfo // taskID -> workerID -> status info
-	resultsChan   chan TaskResult
-	consensusChan chan *Instruction
-	supervisor    *Supervisor
-	retryHistory  map[string]map[string]bool // taskID -> workerID -> used
-	maxRetries    int
+	resultsChan    chan TaskResult
+	consensusChan  chan *Instruction
+	supervisor     *Supervisor
+	retryHistory   map[string]map[string]bool // taskID -> workerID -> used
+	maxRetries     int
 }
 
 // WorkerStatusInfo tracks detailed worker status during task processing
 type WorkerStatusInfo struct {
 	WorkerID  string
-	Status    string    // "waiting", "processing", "completed", "failed"
-	Progress  float64   // 0.0 to 1.0
-	Reasoning string    // Worker's reasoning/thinking process
-	Decision  string    // Worker's decision/answer
-	Provider  string    // LLM provider (openai, anthropic, google, cohere, mistral)
-	Model    string    // LLM model name
+	Status    string  // "waiting", "processing", "completed", "failed"
+	Progress  float64 // 0.0 to 1.0
+	Reasoning string  // Worker's reasoning/thinking process
+	Decision  string  // Worker's decision/answer
+	Provider  string  // LLM provider (openai, anthropic, google, cohere, mistral)
+	Model     string  // LLM model name
 	UpdatedAt time.Time
 }
 
@@ -74,7 +76,7 @@ func (qm *QueueManager) AddInstruction(instruction *Instruction) error {
 
 	qm.mu.Lock()
 	qm.instructions = append(qm.instructions, instruction)
-	
+
 	// Initialize worker statuses map early (before workers are assigned)
 	// Create placeholder statuses so API can return worker count immediately
 	if qm.workerStatuses[instruction.TaskID] == nil {
@@ -100,6 +102,12 @@ func (qm *QueueManager) AddInstruction(instruction *Instruction) error {
 
 // processInstruction handles the execution of a single instruction
 func (qm *QueueManager) processInstruction(instruction *Instruction) {
+	// Always enable merged reasoning so downstream consumers get conversational output
+	if !instruction.Consensus.ExtractMergedReasoning {
+		log.Printf("[QueueManager] Enabling merged reasoning for task %s", instruction.TaskID)
+		instruction.Consensus.ExtractMergedReasoning = true
+	}
+
 	retryCount := 0
 	for retryCount <= qm.maxRetries {
 		if retryCount > 0 {
@@ -121,13 +129,13 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 		// Scale up workers if needed before trying to process
 		currentWorkers := len(qm.supervisor.workers)
 		requiredWorkers := instruction.WorkerCount + usedWorkerCount
-		
+
 		if currentWorkers < requiredWorkers && currentWorkers < qm.supervisor.maxWorkers {
 			targetWorkers := min(requiredWorkers, qm.supervisor.maxWorkers)
 			if err := qm.supervisor.scaleWorkers(context.Background(), targetWorkers); err != nil {
 				log.Printf("[QueueManager] Failed to scale workers: %v", err)
 			} else {
-				log.Printf("[QueueManager] Scaled workers from %d to %d for retry (used workers: %d)", 
+				log.Printf("[QueueManager] Scaled workers from %d to %d for retry (used workers: %d)",
 					currentWorkers, targetWorkers, usedWorkerCount)
 				time.Sleep(time.Second * 2) // Wait for workers to initialize
 			}
@@ -145,13 +153,28 @@ func (qm *QueueManager) processInstruction(instruction *Instruction) {
 	}
 
 	log.Printf("[QueueManager] Failed to reach consensus for instruction %s after %d retries", instruction.TaskID, qm.maxRetries)
+	// Fallback: synthesize a consensus using all available worker results via the AI merger
+	qm.mu.RLock()
+	availableResults := qm.taskResults[instruction.TaskID]
+	qm.mu.RUnlock()
+
+	if len(availableResults) > 0 {
+		log.Printf("[QueueManager] Falling back to AI synthesis with %d worker results for task %s", len(availableResults), instruction.TaskID)
+		instruction.Consensus.ExtractMergedReasoning = true
+		if ok, result := qm.mergeConsensus(availableResults, instruction); ok {
+			qm.resultsChan <- TaskResult{Result: result}
+			return
+		}
+		log.Printf("[QueueManager] AI synthesis fallback failed for task %s", instruction.TaskID)
+	}
+
 	qm.resultsChan <- TaskResult{Error: fmt.Errorf("failed to reach consensus after %d retries", qm.maxRetries)}
 }
 
 // tryProcessInstruction attempts to process an instruction once
 func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCount int) bool {
 	log.Printf("[QueueManager] ===== Starting tryProcessInstruction for task %s (retry %d) =====", instruction.TaskID, retryCount)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), instruction.Consensus.TimeoutDuration)
 	defer cancel()
 
@@ -159,21 +182,21 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 	var workers []*WorkerState
 	maxAttempts := 5
 	baseDelay := 500 * time.Millisecond
-	
+
 	qm.mu.RLock()
 	usedWorkers := qm.retryHistory[instruction.TaskID]
 	usedCount := len(usedWorkers)
 	qm.mu.RUnlock()
-	
+
 	log.Printf("[QueueManager] Task %s: Need %d workers, %d already used in previous attempts", instruction.TaskID, instruction.WorkerCount, usedCount)
 
 	log.Printf("[QueueManager] Attempting to get %d workers for task %s (retry %d)", instruction.WorkerCount, instruction.TaskID, retryCount)
-	
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// Log worker pool status before getting workers
 		total, available := qm.poolManager.GetWorkerCount()
 		log.Printf("[QueueManager] Attempt %d: Pool has %d total workers, %d available (need %d)", attempt+1, total, available, instruction.WorkerCount)
-		
+
 		availableWorkers, getErr := qm.poolManager.GetAvailableWorkers(instruction.WorkerCount)
 		if getErr != nil {
 			log.Printf("[QueueManager] GetAvailableWorkers failed: %v", getErr)
@@ -191,7 +214,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 				}
 			}
 
-			log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), total=%d, available=%d", 
+			log.Printf("[QueueManager] Not enough unused workers (have %d, need %d), total=%d, available=%d",
 				unusedCount, instruction.WorkerCount, total, available)
 
 			// If we have less than needed workers and can scale up, do it immediately
@@ -202,7 +225,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 					if err := qm.supervisor.scaleWorkers(ctx, targetWorkers); err != nil {
 						log.Printf("[QueueManager] Failed to scale workers: %v", err)
 					} else {
-						log.Printf("[QueueManager] Proactively scaled workers from %d to %d", 
+						log.Printf("[QueueManager] Proactively scaled workers from %d to %d",
 							currentWorkers, targetWorkers)
 						time.Sleep(time.Second) // Brief wait for workers to initialize
 					}
@@ -211,7 +234,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 
 			// Force cleanup of stale workers before next attempt
 			qm.poolManager.CleanupStaleWorkers()
-			
+
 			log.Printf("[QueueManager] Retrying worker allocation in %v...", delay)
 			time.Sleep(delay)
 			continue
@@ -232,7 +255,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		}
 
 		log.Printf("[QueueManager] Selected %d workers out of %d available (need %d)", len(workers), len(availableWorkers), instruction.WorkerCount)
-		
+
 		if len(workers) >= instruction.WorkerCount {
 			log.Printf("[QueueManager] Successfully selected %d workers for task %s", len(workers), instruction.TaskID)
 			break
@@ -242,7 +265,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		if delay > 2*time.Second {
 			delay = 2 * time.Second
 		}
-		
+
 		// If we don't have enough workers after scaling, wait briefly and retry
 		time.Sleep(delay)
 	}
@@ -251,7 +274,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		log.Printf("[QueueManager] Failed to get enough workers: have %d, need %d", len(workers), instruction.WorkerCount)
 		return false
 	}
-	
+
 	log.Printf("[QueueManager] Validating %d workers before assignment...", len(workers))
 
 	// Verify workers are actually available and connected before assigning
@@ -267,7 +290,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			log.Printf("[QueueManager] Worker %s is not available (status: %s), skipping", w.ID, status)
 			continue
 		}
-		
+
 		// Verify worker connection exists
 		workerIDStr := w.ID[len("worker-"):]
 		var workerIndex int
@@ -276,7 +299,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			continue
 		}
 		workerIndex-- // Convert to 0-based
-		
+
 		qm.supervisor.mu.RLock()
 		workersLen := len(qm.supervisor.workers)
 		if workerIndex >= workersLen || workerIndex < 0 {
@@ -288,30 +311,30 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		}
 		workerConn := qm.supervisor.workers[workerIndex]
 		qm.supervisor.mu.RUnlock()
-		
+
 		if workerConn.client == nil {
 			log.Printf("[QueueManager] Worker %s client is nil, skipping", w.ID)
 			continue
 		}
-		
+
 		validWorkers = append(validWorkers, w)
 		log.Printf("[QueueManager] Worker %s validated successfully", w.ID)
 	}
-	
+
 	// If we don't have enough valid workers, return false to retry
 	if len(validWorkers) < instruction.WorkerCount {
-		log.Printf("[QueueManager] Only %d valid workers out of %d needed (rejected %d), will retry", 
+		log.Printf("[QueueManager] Only %d valid workers out of %d needed (rejected %d), will retry",
 			len(validWorkers), instruction.WorkerCount, len(workers)-len(validWorkers))
 		return false
 	}
-	
+
 	log.Printf("[QueueManager] All %d workers validated, proceeding with assignment", len(validWorkers))
-	
+
 	// Use only the valid workers (take first N if we have more)
 	if len(validWorkers) > instruction.WorkerCount {
 		validWorkers = validWorkers[:instruction.WorkerCount]
 	}
-	
+
 	// Mark selected workers as used and assign task
 	qm.mu.Lock()
 	for _, w := range validWorkers {
@@ -323,7 +346,7 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 		}
 	}
 	qm.mu.Unlock()
-	
+
 	// Update workers list to use only valid workers
 	workers = validWorkers
 
@@ -450,14 +473,14 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			}
 		}
 		qm.mu.RUnlock()
-		
+
 		log.Printf("[QueueManager] Workers completed: %d, failed: %d, total: %d", completedCount, failedCount, len(workers))
-		
+
 		if completedCount < instruction.WorkerCount {
 			log.Printf("[QueueManager] Not enough workers completed (%d/%d), cannot reach consensus", completedCount, instruction.WorkerCount)
 			return false
 		}
-		
+
 		consensus, result := qm.checkConsensus(instruction)
 		if consensus {
 			log.Printf("[QueueManager] Consensus reached for instruction %s on retry %d", instruction.TaskID, retryCount)
@@ -666,7 +689,7 @@ func (qm *QueueManager) mergeConsensus(results []WorkerResult, instruction *Inst
 		validResponses = append(validResponses, &result)
 		totalVotingPower += result.VotingPower
 		totalConfidence += result.Response.Confidence * result.VotingPower
-		
+
 		// Build response text for synthesis
 		responsesText.WriteString(fmt.Sprintf("Worker %d:\n", i+1))
 		responsesText.WriteString(fmt.Sprintf("  Answer: %s\n", result.Response.Decision))
@@ -675,7 +698,7 @@ func (qm *QueueManager) mergeConsensus(results []WorkerResult, instruction *Inst
 			responsesText.WriteString(fmt.Sprintf("  Alternatives: %s\n", strings.Join(result.Response.Alternatives, ", ")))
 		}
 		responsesText.WriteString("\n")
-		
+
 		// Collect alternatives
 		for _, alt := range result.Response.Alternatives {
 			allAlternatives[alt] = true
@@ -690,9 +713,9 @@ func (qm *QueueManager) mergeConsensus(results []WorkerResult, instruction *Inst
 	avgConfidence := totalConfidence / totalVotingPower
 
 	// First, try voting-based approach for deterministic consensus
-	decisionVotes := make(map[string]float64) // decision -> weighted votes
+	decisionVotes := make(map[string]float64)         // decision -> weighted votes
 	decisionConfidences := make(map[string][]float64) // decision -> list of confidences
-	
+
 	for _, result := range validResponses {
 		decision := result.Response.Decision
 		weightedVote := result.VotingPower * result.Response.Confidence
@@ -714,11 +737,11 @@ func (qm *QueueManager) mergeConsensus(results []WorkerResult, instruction *Inst
 
 	// If we have a clear winner (at least 40% of votes), use it directly
 	useVoting := totalVotes > 0 && (maxVotes/totalVotes >= 0.4 || len(decisionVotes) == 1)
-	
+
 	if !useVoting {
 		// Votes are split - use AI to synthesize a deterministic answer
 		log.Printf("[QueueManager] Votes are split (%.1f%% for top answer), using AI synthesis", (maxVotes/totalVotes)*100)
-		
+
 		synthesisPrompt := fmt.Sprintf(`You are a consensus synthesizer. Multiple AI workers have provided different answers. You MUST pick ONE definitive answer.
 
 CRITICAL RULES:
@@ -762,7 +785,7 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 
 		// Clean the synthesized response
 		bestDecision = cleanJSONResponse(synthesizedDecision)
-		
+
 		// Validate synthesized answer
 		if len(bestDecision) < 5 || len(bestDecision) > 500 {
 			log.Printf("[QueueManager] Synthesized answer invalid, using fallback")
@@ -810,7 +833,7 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 	if instruction.Consensus.ExtractMergedReasoning && len(validResponses) > 1 {
 		mergedReasoningChan = make(chan *MergedReasoning, 1)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), mergedReasoningTimeout)
 			defer cancel()
 			mergedReasoningChan <- qm.extractMergedReasoning(
 				ctx,
@@ -840,8 +863,11 @@ Provide ONLY the definitive answer. No explanations about subjectivity. Just the
 		select {
 		case extracted := <-mergedReasoningChan:
 			consensusResponse.MergedReasoning = extracted
-		case <-time.After(5 * time.Second):
-			log.Printf("[QueueManager] Merged reasoning extraction timed out in mergeConsensus")
+		case <-time.After(mergedReasoningTimeout):
+			log.Printf("[QueueManager] Merged reasoning extraction timed out in mergeConsensus for task %s, falling back to algorithmic", instruction.TaskID)
+			if extracted, err := qm.extractMergedReasoningAlgorithmic(validResponses); err == nil {
+				consensusResponse.MergedReasoning = extracted
+			}
 		}
 	}
 
@@ -923,8 +949,12 @@ func (qm *QueueManager) fallbackMergeConsensus(validResponses []*WorkerResult, a
 
 	// Extract merged reasoning using algorithmic method only (fast fallback)
 	if instruction.Consensus.ExtractMergedReasoning && len(validResponses) > 1 {
-		if extracted, err := qm.extractMergedReasoningAlgorithmic(validResponses); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), mergedReasoningTimeout)
+		defer cancel()
+		if extracted := qm.extractMergedReasoning(ctx, validResponses, instruction.Content, bestDecision); extracted != nil {
 			consensusResponse.MergedReasoning = extracted
+		} else if alg, err := qm.extractMergedReasoningAlgorithmic(validResponses); err == nil {
+			consensusResponse.MergedReasoning = alg
 		}
 	}
 
@@ -1050,40 +1080,45 @@ func (qm *QueueManager) extractMergedReasoningAlgorithmic(workers []*WorkerResul
 	}, nil
 }
 
-// extractMergedReasoningAI uses LLM to extract and merge the best reasoning pieces
+// extractMergedReasoningAI uses LLM to synthesize a conversational response from worker reasoning
 func (qm *QueueManager) extractMergedReasoningAI(ctx context.Context, workers []*WorkerResult, question, decision string) (*MergedReasoning, error) {
 	if qm.supervisor == nil || qm.supervisor.apiKey == "" {
 		return nil, fmt.Errorf("no API key available for AI extraction")
 	}
 
-	// Build prompt with worker reasonings
+	// Build prompt with worker reasonings for conversational synthesis
 	var promptBuilder strings.Builder
-	promptBuilder.WriteString("You are analyzing reasoning from multiple AI workers who agreed on the same answer.\n\n")
-	promptBuilder.WriteString(fmt.Sprintf("Question: %s\n", question))
-	promptBuilder.WriteString(fmt.Sprintf("Agreed Answer: %s\n\n", decision))
-	promptBuilder.WriteString("Worker Reasonings:\n")
+	promptBuilder.WriteString(`You are "The Council" - a wise gathering of AI advisors helping users with their questions.
+Multiple council members have deliberated and reached consensus. Your task is to synthesize their reasoning into a single, natural conversational response.
 
-	for _, worker := range workers {
+`)
+	promptBuilder.WriteString(fmt.Sprintf("User's Question: %s\n\n", question))
+	promptBuilder.WriteString(fmt.Sprintf("Council's Decision: %s\n\n", decision))
+	promptBuilder.WriteString("Council Members' Reasoning:\n")
+
+	for i, worker := range workers {
 		if worker.Response == nil || worker.Response.Reasoning == "" {
 			continue
 		}
-		promptBuilder.WriteString(fmt.Sprintf("[%s (confidence: %.2f)]:\n%s\n\n",
-			worker.WorkerID, worker.Response.Confidence, worker.Response.Reasoning))
+		promptBuilder.WriteString(fmt.Sprintf("Councillor %d (confidence: %.0f%%):\n%s\n\n",
+			i+1, worker.Response.Confidence*100, worker.Response.Reasoning))
 	}
 
-	promptBuilder.WriteString(`Extract the most valuable unique insights from each worker.
-Return ONLY valid JSON with this structure:
-{
-  "summary": "2-3 sentence unified summary of the collective reasoning",
-  "contributions": [
-    {"worker_id": "worker-id", "text": "specific unique insight from this worker", "order": 1}
-  ]
-}
+	promptBuilder.WriteString(`Create a unified response that:
+1. Sounds like a single wise advisor speaking naturally
+2. Incorporates the best insights from each council member
+3. Is conversational and helpful (like ChatGPT)
+4. Addresses the user directly
+5. Is concise but thorough
 
-Rules:
-- Include only unique insights that add value (avoid redundancy)
-- Each worker should contribute at most 1-2 key insights
-- Order contributions by importance`)
+Return ONLY valid JSON:
+{
+  "conversational_response": "Your natural, conversational response to the user that synthesizes all council reasoning into one cohesive answer",
+  "summary": "Brief 1-2 sentence summary of the key points",
+  "contributions": [
+    {"worker_id": "councillor-1", "text": "key insight from this member", "order": 1}
+  ]
+}`)
 
 	// Call OpenAI for synthesis
 	response, err := CallOpenAIFunction(ctx, promptBuilder.String(), qm.supervisor.apiKey)
@@ -1095,8 +1130,9 @@ Rules:
 	response = cleanJSONResponse(response)
 
 	var aiResult struct {
-		Summary       string `json:"summary"`
-		Contributions []struct {
+		ConversationalResponse string `json:"conversational_response"`
+		Summary                string `json:"summary"`
+		Contributions          []struct {
 			WorkerID string `json:"worker_id"`
 			Text     string `json:"text"`
 			Order    int    `json:"order"`
@@ -1109,28 +1145,42 @@ Rules:
 
 	// Build worker confidence map for lookup
 	confidenceMap := make(map[string]float64)
-	for _, worker := range workers {
+	workerIDMap := make(map[int]string) // Map councillor number to actual worker ID
+	for i, worker := range workers {
 		if worker.Response != nil {
 			confidenceMap[worker.WorkerID] = worker.Response.Confidence
+			workerIDMap[i+1] = worker.WorkerID
 		}
 	}
 
-	// Convert to MergedReasoning
+	// Convert to MergedReasoning with proper worker IDs
 	contributions := make([]ReasoningContribution, 0, len(aiResult.Contributions))
 	for _, c := range aiResult.Contributions {
+		// Try to extract councillor number from worker_id like "councillor-1"
+		actualWorkerID := c.WorkerID
+		if strings.HasPrefix(c.WorkerID, "councillor-") {
+			numStr := strings.TrimPrefix(c.WorkerID, "councillor-")
+			if num, err := strconv.Atoi(numStr); err == nil {
+				if realID, ok := workerIDMap[num]; ok {
+					actualWorkerID = realID
+				}
+			}
+		}
+
 		contributions = append(contributions, ReasoningContribution{
-			WorkerID:   c.WorkerID,
+			WorkerID:   actualWorkerID,
 			Text:       c.Text,
-			Confidence: confidenceMap[c.WorkerID],
+			Confidence: confidenceMap[actualWorkerID],
 			Order:      c.Order,
 		})
 	}
 
 	return &MergedReasoning{
-		Summary:       aiResult.Summary,
-		Contributions: contributions,
-		WorkerCount:   len(workers),
-		SynthesisType: "ai",
+		Summary:                aiResult.Summary,
+		Contributions:          contributions,
+		WorkerCount:            len(workers),
+		SynthesisType:          "ai",
+		ConversationalResponse: aiResult.ConversationalResponse,
 	}, nil
 }
 
@@ -1155,27 +1205,23 @@ func isLowQualityMergedReasoning(result *MergedReasoning) bool {
 	return false
 }
 
-// extractMergedReasoning extracts merged reasoning using algorithm-first with AI fallback
+// extractMergedReasoning extracts merged reasoning using LLM-first approach for conversational responses
 func (qm *QueueManager) extractMergedReasoning(ctx context.Context, workers []*WorkerResult, question, decision string) *MergedReasoning {
-	// Try algorithmic extraction first
-	result, err := qm.extractMergedReasoningAlgorithmic(workers)
+	// Always try AI extraction first for conversational responses
+	log.Printf("[QueueManager] Using LLM for conversational reasoning synthesis")
+	aiResult, err := qm.extractMergedReasoningAI(ctx, workers, question, decision)
 	if err != nil {
-		log.Printf("[QueueManager] Algorithmic reasoning extraction failed: %v", err)
-	}
-
-	// Check quality and fall back to AI if needed
-	if isLowQualityMergedReasoning(result) {
-		log.Printf("[QueueManager] Algorithmic result low quality, trying AI extraction")
-		aiResult, err := qm.extractMergedReasoningAI(ctx, workers, question, decision)
-		if err != nil {
-			log.Printf("[QueueManager] AI reasoning extraction failed: %v", err)
-			// Return algorithmic result even if low quality (graceful degradation)
-			return result
+		log.Printf("[QueueManager] AI reasoning extraction failed: %v, falling back to algorithmic", err)
+		// Fall back to algorithmic extraction if AI fails
+		result, algErr := qm.extractMergedReasoningAlgorithmic(workers)
+		if algErr != nil {
+			log.Printf("[QueueManager] Algorithmic extraction also failed: %v", algErr)
+			return nil
 		}
-		return aiResult
+		return result
 	}
 
-	return result
+	return aiResult
 }
 
 // checkConsensus determines if workers have reached consensus on a task
@@ -1347,7 +1393,7 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 		if instruction.Consensus.ExtractMergedReasoning && len(bestGroup.responses) > 1 {
 			mergedReasoningChan = make(chan *MergedReasoning, 1)
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), mergedReasoningTimeout)
 				defer cancel()
 				mergedReasoningChan <- qm.extractMergedReasoning(
 					ctx,
@@ -1391,8 +1437,11 @@ func (qm *QueueManager) checkConsensus(instruction *Instruction) (bool, string) 
 			select {
 			case merged := <-mergedReasoningChan:
 				consensusResponse.MergedReasoning = merged
-			case <-time.After(5 * time.Second):
-				log.Printf("[QueueManager] Merged reasoning extraction timed out")
+			case <-time.After(mergedReasoningTimeout):
+				log.Printf("[QueueManager] Merged reasoning extraction timed out for task %s, falling back to algorithmic", instruction.TaskID)
+				if extracted, err := qm.extractMergedReasoningAlgorithmic(bestGroup.responses); err == nil {
+					consensusResponse.MergedReasoning = extracted
+				}
 			}
 		}
 
@@ -1427,7 +1476,7 @@ func (qm *QueueManager) updateWorkerStatus(taskID, workerID, status string, prog
 				model = workerState.Model
 			}
 		}
-		
+
 		qm.workerStatuses[taskID][workerID] = &WorkerStatusInfo{
 			WorkerID: workerID,
 			Provider: provider,
@@ -1445,7 +1494,7 @@ func (qm *QueueManager) updateWorkerStatus(taskID, workerID, status string, prog
 	if decision != "" {
 		info.Decision = decision
 	}
-	
+
 	// Update provider/model if not set and we can get it from pool manager
 	if (info.Provider == "" || info.Model == "") && qm.poolManager != nil {
 		if workerState, err := qm.poolManager.GetWorkerByID(workerID); err == nil {

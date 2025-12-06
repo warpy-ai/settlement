@@ -38,10 +38,11 @@ type ReasoningContribution struct {
 
 // MergedReasoning contains synthesized reasoning from agreeable workers
 type MergedReasoning struct {
-	Summary       string                  `json:"summary"`        // Unified narrative summary
-	Contributions []ReasoningContribution `json:"contributions"`  // Attributed pieces from each worker
-	WorkerCount   int                     `json:"worker_count"`   // Number of workers that contributed
-	SynthesisType string                  `json:"synthesis_type"` // "ai" or "algorithmic"
+	Summary                string                  `json:"summary"`                          // Unified narrative summary
+	Contributions          []ReasoningContribution `json:"contributions"`                    // Attributed pieces from each worker
+	WorkerCount            int                     `json:"worker_count"`                     // Number of workers that contributed
+	SynthesisType          string                  `json:"synthesis_type"`                   // "ai" or "algorithmic"
+	ConversationalResponse string                  `json:"conversational_response,omitempty"` // Natural chat-friendly response
 }
 
 // ConsensusStrategy defines how to compare worker responses
