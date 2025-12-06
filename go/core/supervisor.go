@@ -40,6 +40,7 @@ type Supervisor struct {
 	apiKey       string
 	numWorkers   int
 	workDir      string
+	llmProvider  string
 	mu           sync.RWMutex
 	wg           sync.WaitGroup
 	taskStatus   TaskStatus
@@ -74,6 +75,7 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 		apiKey:       config.APIKey,
 		numWorkers:   config.NumWorkers,
 		workDir:      config.WorkDir,
+		llmProvider:  config.LLMProvider,
 		poolManager:  poolManager,
 		queueManager: queueManager,
 		maxWorkers:   config.MaxWorkers,
