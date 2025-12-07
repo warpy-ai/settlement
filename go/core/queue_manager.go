@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	pb "settlement-core/proto/gen/proto"
 	"sort"
 	"strconv"
@@ -240,18 +241,75 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			continue
 		}
 
-		// Filter out previously used workers
+		// Shuffle to avoid always picking the same providers first
+		rand.Shuffle(len(availableWorkers), func(i, j int) {
+			availableWorkers[i], availableWorkers[j] = availableWorkers[j], availableWorkers[i]
+		})
+
+		// Filter out previously used workers and enforce provider diversity:
+		// - Hard cap: max 2 workers per provider on a task.
+		// - If we can't reach the requested count under the cap, do a second pass to fill remaining slots.
 		workers = make([]*WorkerState, 0)
+		providerCounts := make(map[string]int)
+
+		// First pass: enforce diversity cap
 		for _, w := range availableWorkers {
-			if !usedWorkers[w.ID] {
+			if usedWorkers[w.ID] {
+				log.Printf("[QueueManager] Skipping previously used worker %s", w.ID)
+				continue
+			}
+
+			provider := strings.ToLower(w.Provider)
+			if provider == "" {
+				provider = "unknown"
+			}
+
+			if providerCounts[provider] >= 2 {
+				log.Printf("[QueueManager] Skipping worker %s due to provider cap (%s)", w.ID, provider)
+				continue
+			}
+
+			workers = append(workers, w)
+			providerCounts[provider]++
+			log.Printf("[QueueManager] Selected worker %s (provider=%s, status=%s)", w.ID, provider, w.Status)
+			if len(workers) >= instruction.WorkerCount {
+				break
+			}
+		}
+
+		// Second pass: if still short, fill remaining slots ignoring the cap to avoid starvation
+		if len(workers) < instruction.WorkerCount {
+			for _, w := range availableWorkers {
+				if usedWorkers[w.ID] {
+					continue
+				}
+				alreadyChosen := false
+				for _, cw := range workers {
+					if cw.ID == w.ID {
+						alreadyChosen = true
+						break
+					}
+				}
+				if alreadyChosen {
+					continue
+				}
 				workers = append(workers, w)
-				log.Printf("[QueueManager] Selected worker %s (status: %s)", w.ID, w.Status)
+				log.Printf("[QueueManager] Added worker %s after relaxing provider cap", w.ID)
 				if len(workers) >= instruction.WorkerCount {
 					break
 				}
-			} else {
-				log.Printf("[QueueManager] Skipping previously used worker %s", w.ID)
 			}
+		}
+
+		// If we still don't have enough after both passes, retry the allocation loop.
+		if len(workers) < instruction.WorkerCount {
+			log.Printf("[QueueManager] Provider cap prevented filling all slots (got %d, need %d); retrying allocation", len(workers), instruction.WorkerCount)
+			delay := time.Duration(1<<uint(attempt)) * baseDelay
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
+			time.Sleep(delay)
+			continue
 		}
 
 		log.Printf("[QueueManager] Selected %d workers out of %d available (need %d)", len(workers), len(availableWorkers), instruction.WorkerCount)

@@ -4,57 +4,78 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
-	pb "settlement-core/proto/gen/proto"
 	llmclient "settlement-core/llm-client"
+	pb "settlement-core/proto/gen/proto"
 	"strings"
 )
 
 // WorkerServer implements the gRPC worker service
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
-	workerID   int
+	workerID  int
 	llmClient llmclient.LLMClient
 	provider  string
 	model     string
 }
 
-// NewWorkerServer creates a new worker server instance with a random LLM
-// Set useReliableOnly=true to only use tested, reliable models
+// NewWorkerServer creates a new worker server instance
+// Priority: explicit env overrides -> reliable models (if flag) -> random
 func NewWorkerServer(id int) *WorkerServer {
-	// Check if we should only use reliable models (via environment variable)
+	// Env overrides let the supervisor pin provider/model per worker
+	providerOverride := strings.TrimSpace(os.Getenv("LLM_PROVIDER"))
+	modelOverride := strings.TrimSpace(os.Getenv("LLM_MODEL"))
+
 	useReliableOnly := os.Getenv("USE_RELIABLE_MODELS_ONLY") == "true"
-	
+
 	var config llmclient.ModelConfig
-	if useReliableOnly {
-		// Use only known reliable models
-		reliableModels := llmclient.GetReliableModels()
-		// Select randomly from reliable models
-		config = llmclient.GetRandomLLMConfigFromMap(reliableModels)
-	} else {
-		// Get random LLM configuration from all available models
+	switch {
+	case providerOverride != "":
+		// If model not provided, pick a random model for this provider
+		if modelOverride == "" {
+			models := llmclient.GetModelsForProvider(llmclient.Provider(providerOverride))
+			if len(models) > 0 {
+				modelOverride = models[rand.Intn(len(models))]
+			}
+		}
+		config = llmclient.ModelConfig{
+			Provider: providerOverride,
+			Model:    modelOverride,
+		}
+	case useReliableOnly:
+		config = llmclient.GetRandomLLMConfigFromMap(llmclient.GetReliableModels())
+	default:
 		config = llmclient.GetRandomLLMConfig()
 	}
-	
+
+	if config.Model == "" {
+		// Last resort: default model for the chosen provider
+		models := llmclient.GetModelsForProvider(llmclient.Provider(config.Provider))
+		if len(models) > 0 {
+			config.Model = models[rand.Intn(len(models))]
+		}
+	}
+
 	// Create LLM client with the selected model
 	client, err := llmclient.NewLLMClientWithModel(config.Provider, config.Model)
 	if err != nil {
 		log.Printf("[Worker %d] Failed to create LLM client with %s/%s, falling back to OpenAI: %v", id, config.Provider, config.Model, err)
-		// Fallback to OpenAI if random selection fails
+		// Fallback to OpenAI if selection fails
 		client, _ = llmclient.NewLLMClient("openai")
 		config.Provider = "openai"
 		config.Model = "gpt-4o"
 	}
-	
+
 	// For Google provider, try to use a model that's more likely to work
 	// If the selected model fails, we'll catch it during the first API call
 	if config.Provider == "google" {
 		// Log which model we're trying
 		log.Printf("[Worker %d] Using Google model: %s (if this fails, worker will retry with fallback)", id, config.Model)
 	}
-	
+
 	log.Printf("[Worker %d] Initialized with LLM: %s, Model: %s", id, config.Provider, config.Model)
-	
+
 	return &WorkerServer{
 		workerID:  id,
 		llmClient: client,
@@ -129,7 +150,7 @@ Respond ONLY with the JSON object, no other text.`, category, category)
 
 	// Get the appropriate API key for the worker's assigned provider
 	apiKey := s.getAPIKeyForProvider(req.ApiKey)
-	
+
 	// Process task using the worker's assigned LLM
 	result, err := s.llmClient.Call(stream.Context(), systemPrompt, req.Content, apiKey)
 	if err != nil {
@@ -145,7 +166,7 @@ Respond ONLY with the JSON object, no other text.`, category, category)
 
 	// Clean the response content (remove markdown code blocks if present)
 	cleanedResult := cleanJSONResponse(result)
-	
+
 	// Log the raw response for debugging (truncated)
 	if len(cleanedResult) > 500 {
 		log.Printf("[Worker %d] Raw response (truncated): %s...", s.workerID, cleanedResult[:500])
@@ -205,11 +226,11 @@ func (s *WorkerServer) getAPIKeyForProvider(defaultKey string) string {
 	default:
 		return defaultKey
 	}
-	
+
 	if apiKey := os.Getenv(envVar); apiKey != "" {
 		return apiKey
 	}
-	
+
 	// Fallback to default key if provider-specific key not found
 	return defaultKey
 }

@@ -42,10 +42,10 @@ func main() {
 		log.Fatal("OPENAI_API_KEY environment variable is required. Please set it in the .env file")
 	}
 
-	// Get LLM provider from environment (defaults to "openai")
+	// Get LLM provider from environment (defaults to "random" for diversity)
 	llmProvider := os.Getenv("LLM_PROVIDER")
 	if llmProvider == "" {
-		llmProvider = "openai"
+		llmProvider = "random"
 	}
 
 	// Get current working directory for WorkDir
@@ -56,10 +56,10 @@ func main() {
 
 	// Create a supervisor with configuration
 	supervisor := core.NewSupervisor(core.SupervisorConfig{
-		NumWorkers:  3,        // Start with minimum workers
-		MaxWorkers: 15,        // Allow scaling up to 15 workers
-		APIKey:     apiKey,
-		WorkDir:    workDir,
+		NumWorkers:  3,  // Start with minimum workers
+		MaxWorkers:  15, // Allow scaling up to 15 workers
+		APIKey:      apiKey,
+		WorkDir:     workDir,
 		LLMProvider: llmProvider,
 	})
 

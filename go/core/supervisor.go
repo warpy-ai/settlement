@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	llmclient "settlement-core/llm-client"
 	pb "settlement-core/proto/gen/proto"
 
 	"google.golang.org/grpc"
@@ -52,7 +55,7 @@ type Supervisor struct {
 // SupervisorConfig holds configuration for the supervisor
 type SupervisorConfig struct {
 	NumWorkers  int
-	MaxWorkers  int    // Maximum number of workers allowed
+	MaxWorkers  int // Maximum number of workers allowed
 	APIKey      string
 	WorkDir     string
 	LLMProvider string // LLM provider: "openai", "anthropic", "google", "cohere", "mistral"
@@ -87,23 +90,59 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	return supervisor
 }
 
-func (s *Supervisor) startWorkerProcess(id int) error {
+func (s *Supervisor) startWorkerProcess(id int) (llmclient.ModelConfig, error) {
 	workerBinary := filepath.Join(s.workDir, "worker")
+
+	// Pick provider/model for this worker
+	cfg := s.pickLLMConfig()
 
 	// Start the worker process
 	cmd := exec.Command(workerBinary, "-id", fmt.Sprintf("%d", id))
-	cmd.Env = append(os.Environ(), fmt.Sprintf("OPENAI_API_KEY=%s", s.apiKey))
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("OPENAI_API_KEY=%s", os.Getenv("OPENAI_API_KEY")),
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", os.Getenv("ANTHROPIC_API_KEY")),
+		fmt.Sprintf("GOOGLE_API_KEY=%s", os.Getenv("GOOGLE_API_KEY")),
+		fmt.Sprintf("COHERE_API_KEY=%s", os.Getenv("COHERE_API_KEY")),
+		fmt.Sprintf("MISTRAL_API_KEY=%s", os.Getenv("MISTRAL_API_KEY")),
+		fmt.Sprintf("LLM_PROVIDER=%s", cfg.Provider),
+		fmt.Sprintf("LLM_MODEL=%s", cfg.Model),
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = s.workDir // Set working directory
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start worker %d: %v", id, err)
+		return llmclient.ModelConfig{}, fmt.Errorf("failed to start worker %d: %v", id, err)
 	}
 
 	s.workerProcs[id-1] = cmd
-	log.Printf("[Supervisor] Started worker %d with PID %d", id, cmd.Process.Pid)
-	return nil
+	log.Printf("[Supervisor] Started worker %d with PID %d (provider=%s, model=%s)", id, cmd.Process.Pid, cfg.Provider, cfg.Model)
+	return cfg, nil
+}
+
+// pickLLMConfig chooses a provider/model for a worker.
+// Priority:
+// 1) If llmProvider is empty or "random": pick random from reliable set (then full set fallback)
+// 2) Otherwise: pick random model from the configured provider
+func (s *Supervisor) pickLLMConfig() llmclient.ModelConfig {
+	rand.Seed(time.Now().UnixNano())
+
+	if s.llmProvider == "" || strings.ToLower(s.llmProvider) == "random" {
+		reliable := llmclient.GetReliableModels()
+		cfg := llmclient.GetRandomLLMConfigFromMap(reliable)
+		if cfg.Provider == "" {
+			cfg = llmclient.GetRandomLLMConfig()
+		}
+		return cfg
+	}
+
+	// Use configured provider, random model from that provider
+	models := llmclient.GetModelsForProvider(llmclient.Provider(s.llmProvider))
+	model := ""
+	if len(models) > 0 {
+		model = models[rand.Intn(len(models))]
+	}
+	return llmclient.ModelConfig{Provider: s.llmProvider, Model: model}
 }
 
 func (s *Supervisor) waitForWorkerHealth(ctx context.Context, port int, maxRetries int) error {
@@ -269,12 +308,13 @@ func (s *Supervisor) Start(ctx context.Context) {
 
 	// Start worker processes
 	for i := 1; i <= s.numWorkers; i++ {
-		if err := s.startWorkerProcess(i); err != nil {
+		cfg, err := s.startWorkerProcess(i)
+		if err != nil {
 			log.Printf("[Supervisor] Error starting worker %d: %v", i, err)
 			continue
 		}
-		// Register worker with pool manager
-		s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", i), 1.0)
+		// Register worker with pool manager (carry provider/model)
+		s.poolManager.RegisterWorkerWithModel(fmt.Sprintf("worker-%d", i), 1.0, cfg.Provider, cfg.Model)
 		// Give workers time to start
 		time.Sleep(time.Second * 2)
 	}
@@ -377,10 +417,13 @@ func (s *Supervisor) monitorWorkers(ctx context.Context) {
 					s.workerProcs[i] = nil
 
 					// Start new worker
-					if err := s.startWorkerProcess(i + 1); err != nil {
+					cfg, err := s.startWorkerProcess(i + 1)
+					if err != nil {
 						log.Printf("[Supervisor] Failed to restart worker %d: %v", i+1, err)
 						continue
 					}
+					// Re-register with provider/model
+					s.poolManager.RegisterWorkerWithModel(fmt.Sprintf("worker-%d", i+1), 1.0, cfg.Provider, cfg.Model)
 
 					// Wait for worker to be ready
 					go func(workerID int) {
@@ -517,7 +560,7 @@ func (s *Supervisor) scaleWorkers(ctx context.Context, targetWorkers int) error 
 			// Unregister from pool manager first
 			s.poolManager.UnregisterWorker(workerID)
 			log.Printf("[Supervisor] Unregistered worker %s from pool", workerID)
-			
+
 			if s.workers[i].conn != nil {
 				s.workers[i].conn.Close()
 			}
@@ -547,7 +590,8 @@ func (s *Supervisor) scaleWorkers(ctx context.Context, targetWorkers int) error 
 			defer wg.Done()
 
 			// Start new worker process
-			if err := s.startWorkerProcess(idx + 1); err != nil {
+			cfg, err := s.startWorkerProcess(idx + 1)
+			if err != nil {
 				errChan <- fmt.Errorf("failed to start worker %d: %v", idx+1, err)
 				return
 			}
@@ -575,8 +619,8 @@ func (s *Supervisor) scaleWorkers(ctx context.Context, targetWorkers int) error 
 					continue
 				}
 
-				// Register and mark worker as available
-				s.poolManager.RegisterWorker(fmt.Sprintf("worker-%d", idx+1), 1.0)
+				// Register and mark worker as available (carry provider/model)
+				s.poolManager.RegisterWorkerWithModel(fmt.Sprintf("worker-%d", idx+1), 1.0, cfg.Provider, cfg.Model)
 				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", idx+1), "available")
 				log.Printf("[Supervisor] Successfully connected to worker %d", idx+1)
 
