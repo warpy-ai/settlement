@@ -18,7 +18,7 @@ type MistralClient struct {
 // NewMistralClient creates a new Mistral client
 func NewMistralClient() *MistralClient {
 	return &MistralClient{
-		model: "large-2", // default - actual API model ID
+		model: "mistral-large-latest", // default - latest large model
 	}
 }
 
@@ -66,14 +66,8 @@ func (c *MistralClient) Call(ctx context.Context, systemPrompt, userMessage, api
 		{Role: "user", Content: userMessage},
 	}
 
-	// Map friendly names to actual API model IDs
-	apiModelID := c.model
-	if apiModelID == "mistral-large-latest" {
-		apiModelID = "large-2" // Use actual API ID
-	}
-	
 	reqBody := mistralRequest{
-		Model:    apiModelID,
+		Model:    c.model,
 		Messages: messages,
 	}
 
@@ -121,14 +115,8 @@ func (c *MistralClient) CallStreaming(ctx context.Context, systemPrompt, userMes
 		{Role: "user", Content: userMessage},
 	}
 
-	// Map friendly names to actual API model IDs
-	apiModelID := c.model
-	if apiModelID == "mistral-large-latest" {
-		apiModelID = "large-2" // Use actual API ID
-	}
-	
 	reqBody := mistralRequest{
-		Model:    apiModelID,
+		Model:    c.model,
 		Messages: messages,
 	}
 

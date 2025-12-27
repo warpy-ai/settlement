@@ -39,16 +39,14 @@ var providerModels = map[Provider][]string{
 		"gemini-1.5-flash",         // Legacy fallback
 	},
 	ProviderCohere: {
-		"command-a-03-2025",  // Latest model
-		"command-r-plus",     // Legacy fallback
-		"command-r",          // Legacy fallback
-		"command",            // Legacy fallback
+		"command-a-03-2025", // Latest model
+		"command-r",         // Reliable fallback
+		"command",           // Legacy fallback
 	},
 	ProviderMistral: {
-		"large-2",                // Latest large model (actual API ID)
-		"mistral-medium-latest",  // Medium model
-		"mistral-large-latest",   // Legacy fallback
-		"mistral-small-latest",   // Small model
+		"mistral-large-latest", // Latest large model
+		"mistral-medium-latest", // Medium model
+		"mistral-small-latest",  // Small model
 	},
 }
 
@@ -96,14 +94,22 @@ func GetReliableModels() map[Provider][]string {
 			"gpt-4o-mini",
 		},
 		ProviderAnthropic: {
-			"claude-sonnet-4-5-20250929",  // Latest Sonnet 4.5 (actual API model ID)
+			"claude-sonnet-4-5-20250929", // Latest Sonnet 4.5 (actual API model ID)
 			"claude-haiku-4-5",           // Haiku 4.5
 			"claude-opus-4-1",            // Opus 4.1
 		},
-		// Temporarily exclude Google until we verify model names work correctly
-		// ProviderGoogle: {
-		// 	"gemini-2.0-flash-exp",
-		// },
+		ProviderGoogle: {
+			"gemini-2.5-flash", // Latest Flash model
+			"gemini-2.5-pro",   // Latest Pro model
+		},
+		ProviderCohere: {
+			"command-a-03-2025", // Latest model
+			"command-r",         // Reliable fallback
+		},
+		ProviderMistral: {
+			"mistral-large-latest", // Latest large model
+			"mistral-small-latest", // Small model (faster, cheaper)
+		},
 	}
 }
 
