@@ -1,0 +1,153 @@
+name: Build and Deploy Settlement Go Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to build from"
+        required: true
+        default: "master"
+        type: string
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  ALLOWED_USERS: '["jucasoliveira"]'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: contains(fromJSON('["jucasoliveira"]'), github.actor)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.REPO_PAT }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./go
+          file: ./go/Dockerfile
+          platforms: linux/arm64
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: self-hosted
+    needs: build
+    if: contains(fromJSON('["jucasoliveira"]'), github.actor)
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.REPO_PAT }}
+
+      - name: Pull Docker image with retries
+        timeout-minutes: 30
+        run: |
+          IMAGE=${{ env.IMAGE_NAME }}:latest
+          MAX_RETRIES=5
+          RETRY_DELAY=30
+
+          retry_pull() {
+            local attempt=1
+            while [ $attempt -le $MAX_RETRIES ]; do
+              echo "Attempting to pull image (attempt $attempt/$MAX_RETRIES)..."
+              docker rmi "$IMAGE" 2>/dev/null || true
+
+              if docker pull "$IMAGE" 2>&1; then
+                echo "Successfully pulled image"
+                return 0
+              else
+                local exit_code=$?
+                if [ $attempt -lt $MAX_RETRIES ]; then
+                  echo "Pull failed with exit code $exit_code, waiting ${RETRY_DELAY} seconds before retry..."
+                  docker system prune -f 2>/dev/null || true
+                  sleep $RETRY_DELAY
+                  RETRY_DELAY=$((RETRY_DELAY * 2))
+                fi
+                attempt=$((attempt + 1))
+              fi
+            done
+            echo "Failed to pull image after $MAX_RETRIES attempts"
+            return 1
+          }
+
+          retry_pull
+
+      - name: Run container
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          CONTAINER_NAME="settlement-core"
+
+          # Create network if it doesn't exist
+          docker network create web_network 2>/dev/null || true
+
+          if [ "$(docker ps -aq -f name=^${CONTAINER_NAME}$)" ]; then
+            docker stop $CONTAINER_NAME || true
+            docker rm $CONTAINER_NAME || true
+          fi
+
+          docker run -d --name $CONTAINER_NAME --restart unless-stopped --network web_network \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            -e GOOGLE_API_KEY="$GOOGLE_API_KEY" \
+            -e COHERE_API_KEY="$COHERE_API_KEY" \
+            -e MISTRAL_API_KEY="$MISTRAL_API_KEY" \
+            -p 8080:8080 \
+            -p 50051-50065:50051-50065 \
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Health check
+        run: |
+          echo "Waiting for service to start..."
+          sleep 10
+
+          MAX_RETRIES=6
+          RETRY_DELAY=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            if curl -sf http://localhost:8080/api/v1/stats > /dev/null 2>&1; then
+              echo "Service is healthy!"
+              exit 0
+            fi
+            echo "Health check attempt $i/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+          done
+
+          echo "Service failed to become healthy"
+          docker logs settlement-core --tail 50
+          exit 1
+
+      - name: Cleanup dangling Docker resources
+        run: |
+          docker system prune -f
+          docker image prune -f
+          docker volume prune -f
