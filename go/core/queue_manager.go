@@ -666,11 +666,18 @@ func (qm *QueueManager) processTaskWithWorker(ctx context.Context, instruction *
 		}
 	}
 
+	// Get system prompt for this worker if specified
+	var systemPrompt string
+	if instruction.WorkerSystemPrompts != nil {
+		systemPrompt = instruction.WorkerSystemPrompts[workerIndex]
+	}
+
 	// Create stream for task processing
 	stream, err := workerConn.client.ProcessTask(ctx, &pb.TaskRequest{
-		TaskId:  instruction.TaskID,
-		Content: instruction.Content,
-		ApiKey:  qm.supervisor.apiKey,
+		TaskId:       instruction.TaskID,
+		Content:      instruction.Content,
+		ApiKey:       qm.supervisor.apiKey,
+		SystemPrompt: systemPrompt,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create stream: %v", err)

@@ -114,39 +114,15 @@ func (s *WorkerServer) ProcessTask(req *pb.TaskRequest, stream pb.WorkerService_
 	// Determine task category
 	category := s.determineTaskCategory(req.Content)
 
-	// Create system prompt based on category
-	systemPrompt := fmt.Sprintf(`You are an AI worker processing a %s task. 
-Your response must be a JSON object with the following structure:
-{
-    "decision": "your main answer/decision",
-    "confidence": <float between 0-1>,
-    "category": "%s",
-    "reasoning": "detailed explanation of your thought process",
-    "metadata": {
-        "key1": "value1",
-        "key2": "value2"
-    },
-    "alternatives": ["alternative1", "alternative2"]
-}
-
-IMPORTANT: Be decisive and direct. When asked "who is the best" or similar questions, provide a CLEAR, DEFINITIVE answer. Do not hedge or say "it depends" - make a decision based on the most common criteria (e.g., achievements, statistics, impact). Pick ONE answer.
-
-For translations:
-- decision: the translated text
-- metadata: source_language, target_language, formality_level
-- alternatives: alternative translations
-
-For analysis:
-- decision: clear, concise conclusion - be definitive
-- metadata: key_factors, data_sources, confidence_factors
-- alternatives: alternative viewpoints
-
-For calculations:
-- decision: the final calculated value
-- metadata: formula_used, units, precision
-- alternatives: results with different methods
-
-Respond ONLY with the JSON object, no other text.`, category, category)
+	// Use custom system prompt if provided, otherwise generate default
+	var systemPrompt string
+	if req.GetSystemPrompt() != "" {
+		systemPrompt = req.GetSystemPrompt()
+		log.Printf("[Worker %d] Using custom system prompt", s.workerID)
+	} else {
+		// Create system prompt based on category
+		systemPrompt = s.generateDefaultSystemPrompt(category)
+	}
 
 	// Get the appropriate API key for the worker's assigned provider
 	apiKey := s.getAPIKeyForProvider(req.ApiKey)
@@ -203,6 +179,42 @@ Respond ONLY with the JSON object, no other text.`, category, category)
 
 	log.Printf("[Worker %d] Completed task: %s", s.workerID, req.TaskId)
 	return nil
+}
+
+// generateDefaultSystemPrompt creates the default system prompt based on task category
+func (s *WorkerServer) generateDefaultSystemPrompt(category string) string {
+	return fmt.Sprintf(`You are an AI worker processing a %s task.
+Your response must be a JSON object with the following structure:
+{
+    "decision": "your main answer/decision",
+    "confidence": <float between 0-1>,
+    "category": "%s",
+    "reasoning": "detailed explanation of your thought process",
+    "metadata": {
+        "key1": "value1",
+        "key2": "value2"
+    },
+    "alternatives": ["alternative1", "alternative2"]
+}
+
+IMPORTANT: Be decisive and direct. When asked "who is the best" or similar questions, provide a CLEAR, DEFINITIVE answer. Do not hedge or say "it depends" - make a decision based on the most common criteria (e.g., achievements, statistics, impact). Pick ONE answer.
+
+For translations:
+- decision: the translated text
+- metadata: source_language, target_language, formality_level
+- alternatives: alternative translations
+
+For analysis:
+- decision: clear, concise conclusion - be definitive
+- metadata: key_factors, data_sources, confidence_factors
+- alternatives: alternative viewpoints
+
+For calculations:
+- decision: the final calculated value
+- metadata: formula_used, units, precision
+- alternatives: results with different methods
+
+Respond ONLY with the JSON object, no other text.`, category, category)
 }
 
 // getAPIKeyForProvider returns the appropriate API key for the worker's provider

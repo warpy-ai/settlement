@@ -21,6 +21,7 @@ func main() {
 
 	// Parse command line flags
 	port := flag.Int("port", 8080, "API server port")
+	lazyStart := flag.Bool("lazy", true, "Start in lazy mode (workers started on-demand only)")
 	flag.Parse()
 
 	// Set up signal handling
@@ -56,11 +57,12 @@ func main() {
 
 	// Create a supervisor with configuration
 	supervisor := core.NewSupervisor(core.SupervisorConfig{
-		NumWorkers:  3,  // Start with minimum workers
-		MaxWorkers:  15, // Allow scaling up to 15 workers
+		NumWorkers:  3,          // Default worker count for non-lazy mode
+		MaxWorkers:  15,         // Allow scaling up to 15 workers
 		APIKey:      apiKey,
 		WorkDir:     workDir,
 		LLMProvider: llmProvider,
+		LazyStart:   *lazyStart, // Workers started on-demand only
 	})
 
 	// Create a context with timeout

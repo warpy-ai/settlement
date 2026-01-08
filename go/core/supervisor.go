@@ -49,19 +49,22 @@ type Supervisor struct {
 	taskStatus   TaskStatus
 	poolManager  *PoolManager
 	queueManager *QueueManager
-	maxWorkers   int // Maximum number of workers allowed
+	maxWorkers   int  // Maximum number of workers allowed
+	lazyStart    bool // If true, workers are started on-demand only
+	initialized  bool // Whether the supervisor has been initialized (worker binary built)
 }
 
 // SupervisorConfig holds configuration for the supervisor
 type SupervisorConfig struct {
 	NumWorkers  int
-	MaxWorkers  int // Maximum number of workers allowed
+	MaxWorkers  int    // Maximum number of workers allowed
 	APIKey      string
 	WorkDir     string
 	LLMProvider string // LLM provider: "openai", "anthropic", "google", "cohere", "mistral"
+	LazyStart   bool   // If true, workers are not started at startup (on-demand only)
 }
 
-// Update NewSupervisor function
+// NewSupervisor creates a new supervisor instance
 func NewSupervisor(config SupervisorConfig) *Supervisor {
 	if config.MaxWorkers == 0 {
 		config.MaxWorkers = 15 // Default maximum workers
@@ -70,18 +73,26 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	poolManager := NewPoolManager()
 	queueManager := NewQueueManager(poolManager)
 
+	// For lazy start, initialize with zero workers
+	initialWorkers := config.NumWorkers
+	if config.LazyStart {
+		initialWorkers = 0
+	}
+
 	supervisor := &Supervisor{
-		workers:      make([]workerConnection, config.NumWorkers),
-		workerProcs:  make([]*exec.Cmd, config.NumWorkers),
+		workers:      make([]workerConnection, initialWorkers),
+		workerProcs:  make([]*exec.Cmd, initialWorkers),
 		tasks:        make(chan string, config.NumWorkers*2),
 		results:      make(chan TaskResult, config.NumWorkers*2),
 		apiKey:       config.APIKey,
-		numWorkers:   config.NumWorkers,
+		numWorkers:   initialWorkers,
 		workDir:      config.WorkDir,
 		llmProvider:  config.LLMProvider,
 		poolManager:  poolManager,
 		queueManager: queueManager,
 		maxWorkers:   config.MaxWorkers,
+		lazyStart:    config.LazyStart,
+		initialized:  false,
 	}
 
 	// Set supervisor reference in queue manager
@@ -285,14 +296,14 @@ func (ts *TaskStatus) markCompleted() {
 	ts.mu.Unlock()
 }
 
-// Start initializes workers and starts processing
-func (s *Supervisor) Start(ctx context.Context) {
-	log.Printf("[Supervisor] Starting supervisor with %d workers", s.numWorkers)
+// initializeWorkerBinary ensures the worker binary is built
+func (s *Supervisor) initializeWorkerBinary() {
+	if s.initialized {
+		return
+	}
 
-	// Check if worker binary already exists (e.g., in Docker)
 	workerPath := filepath.Join(s.workDir, "worker")
 	if _, err := os.Stat(workerPath); os.IsNotExist(err) {
-		// Build worker binary only if it doesn't exist
 		buildCmd := exec.Command("go", "build", "-o", workerPath, "cmd/worker/main.go")
 		buildCmd.Dir = s.workDir
 		buildCmd.Stdout = os.Stdout
@@ -305,6 +316,48 @@ func (s *Supervisor) Start(ctx context.Context) {
 	} else {
 		log.Printf("[Supervisor] Using existing worker binary at %s", workerPath)
 	}
+	s.initialized = true
+}
+
+// startResultForwarding starts the goroutine that forwards results from queue manager
+func (s *Supervisor) startResultForwarding(ctx context.Context) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Supervisor] Recovered from panic in result forwarding: %v", r)
+			}
+		}()
+
+		queueResults := s.queueManager.GetResults()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case result, ok := <-queueResults:
+				if !ok {
+					return
+				}
+				select {
+				case s.results <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+}
+
+// Start initializes workers and starts processing
+func (s *Supervisor) Start(ctx context.Context) {
+	if s.lazyStart {
+		log.Printf("[Supervisor] Starting in lazy mode - workers will be started on-demand")
+		s.initializeWorkerBinary()
+		s.startResultForwarding(ctx)
+		return
+	}
+
+	log.Printf("[Supervisor] Starting supervisor with %d workers", s.numWorkers)
+	s.initializeWorkerBinary()
 
 	// Start worker processes
 	for i := 1; i <= s.numWorkers; i++ {
@@ -365,30 +418,7 @@ func (s *Supervisor) Start(ctx context.Context) {
 	go s.monitorWorkers(ctx)
 
 	// Forward results from queue manager to supervisor results channel
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[Supervisor] Recovered from panic in result forwarding: %v", r)
-			}
-		}()
-
-		queueResults := s.queueManager.GetResults()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case result, ok := <-queueResults:
-				if !ok {
-					return
-				}
-				select {
-				case s.results <- result:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
+	s.startResultForwarding(ctx)
 }
 
 func (s *Supervisor) monitorWorkers(ctx context.Context) {
@@ -724,4 +754,232 @@ func (s *Supervisor) SubmitTask(task string) {
 // GetResults provides access to the results channel
 func (s *Supervisor) GetResults() <-chan TaskResult {
 	return s.results
+}
+
+// StartSessionWorkers starts workers on-demand for a session with specific configurations
+func (s *Supervisor) StartSessionWorkers(ctx context.Context, session *SessionConfig) error {
+	s.mu.Lock()
+	currentWorkers := len(s.workers)
+	targetWorkers := session.WorkerCount
+	s.mu.Unlock()
+
+	log.Printf("[Supervisor] Starting session workers: current=%d, target=%d", currentWorkers, targetWorkers)
+
+	// Check if worker binary exists, build if needed
+	workerPath := filepath.Join(s.workDir, "worker")
+	if _, err := os.Stat(workerPath); os.IsNotExist(err) {
+		buildCmd := exec.Command("go", "build", "-o", workerPath, "cmd/worker/main.go")
+		buildCmd.Dir = s.workDir
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+
+		log.Printf("[Supervisor] Building worker binary in %s", s.workDir)
+		if err := buildCmd.Run(); err != nil {
+			return fmt.Errorf("failed to build worker binary: %v", err)
+		}
+	}
+
+	// Scale down existing workers if we have too many
+	if currentWorkers > targetWorkers {
+		s.mu.Lock()
+		for i := currentWorkers - 1; i >= targetWorkers; i-- {
+			workerID := fmt.Sprintf("worker-%d", i+1)
+			s.poolManager.UnregisterWorker(workerID)
+			if s.workers[i].conn != nil {
+				s.workers[i].conn.Close()
+			}
+			if s.workerProcs[i] != nil && s.workerProcs[i].Process != nil {
+				s.workerProcs[i].Process.Signal(syscall.SIGTERM)
+				s.workerProcs[i].Wait()
+			}
+		}
+		s.workers = s.workers[:targetWorkers]
+		s.workerProcs = s.workerProcs[:targetWorkers]
+		s.mu.Unlock()
+	}
+
+	// Prepare slices for new workers if needed
+	if currentWorkers < targetWorkers {
+		s.mu.Lock()
+		s.workers = append(s.workers, make([]workerConnection, targetWorkers-currentWorkers)...)
+		s.workerProcs = append(s.workerProcs, make([]*exec.Cmd, targetWorkers-currentWorkers)...)
+		s.mu.Unlock()
+	}
+
+	// Start/reconfigure workers with session config
+	var wg sync.WaitGroup
+	errChan := make(chan error, targetWorkers)
+
+	for i := 0; i < targetWorkers; i++ {
+		workerConfig := session.GetWorkerConfig(i)
+
+		// If worker already exists at this index, check if reconfiguration is needed
+		s.mu.RLock()
+		existingProc := s.workerProcs[i]
+		s.mu.RUnlock()
+
+		if existingProc != nil && existingProc.Process != nil {
+			// Check if process is still running
+			if err := existingProc.Process.Signal(syscall.Signal(0)); err == nil {
+				// Worker is running, check if we need to reconfigure for different provider
+				existingWorkerID := fmt.Sprintf("worker-%d", i+1)
+				existingState, _ := s.poolManager.GetWorkerByID(existingWorkerID)
+
+				// If the session requires a specific provider and it differs from current, restart worker
+				if existingState != nil && !workerConfig.IsAutoProvider() {
+					currentProvider := strings.ToLower(existingState.Provider)
+					requestedProvider := strings.ToLower(workerConfig.Provider)
+					if currentProvider != requestedProvider {
+						log.Printf("[Supervisor] Worker %d needs provider change: %s -> %s, restarting...",
+							i+1, currentProvider, requestedProvider)
+						// Terminate existing worker
+						s.poolManager.UnregisterWorker(existingWorkerID)
+						if existingProc.Process != nil {
+							existingProc.Process.Signal(syscall.SIGTERM)
+							existingProc.Wait()
+						}
+						s.mu.Lock()
+						s.workerProcs[i] = nil
+						if s.workers[i].conn != nil {
+							s.workers[i].conn.Close()
+						}
+						s.workers[i] = workerConnection{}
+						s.mu.Unlock()
+						// Fall through to start new worker with correct provider
+					} else {
+						// Provider matches, keep existing worker
+						continue
+					}
+				} else {
+					// No specific provider required or can't check, keep existing worker
+					continue
+				}
+			}
+		}
+
+		wg.Add(1)
+		go func(idx int, cfg *WorkerConfig) {
+			defer wg.Done()
+
+			// Start new worker process with session config
+			modelCfg, err := s.startWorkerProcessWithConfig(idx+1, cfg)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to start worker %d: %v", idx+1, err)
+				return
+			}
+
+			// Give the worker process time to start
+			time.Sleep(time.Second)
+
+			// Wait for worker to be ready
+			readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			var connected bool
+			for retries := 0; retries < 10; retries++ {
+				if err := s.waitForWorkerHealth(readyCtx, 50051+idx, 5); err != nil {
+					log.Printf("[Supervisor] Worker %d health check attempt %d failed: %v", idx+1, retries+1, err)
+					time.Sleep(time.Second)
+					continue
+				}
+
+				if err := s.connectToWorker(readyCtx, idx); err != nil {
+					log.Printf("[Supervisor] Worker %d connection attempt %d failed: %v", idx+1, retries+1, err)
+					time.Sleep(time.Second)
+					continue
+				}
+
+				// Register and mark worker as available
+				s.poolManager.RegisterWorkerWithModel(fmt.Sprintf("worker-%d", idx+1), 1.0, modelCfg.Provider, modelCfg.Model)
+				s.poolManager.UpdateWorkerStatus(fmt.Sprintf("worker-%d", idx+1), "available")
+				log.Printf("[Supervisor] Successfully connected to worker %d", idx+1)
+
+				// Start heartbeat goroutine
+				go s.workerHeartbeat(ctx, fmt.Sprintf("worker-%d", idx+1))
+
+				// Start task processing goroutine
+				s.wg.Add(1)
+				go s.processWorkerTasks(ctx, idx)
+
+				connected = true
+				break
+			}
+
+			if !connected {
+				errChan <- fmt.Errorf("failed to establish connection with worker %d after all retries", idx+1)
+			}
+		}(i, workerConfig)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	// Check for errors
+	var errors []string
+	for err := range errChan {
+		if err != nil {
+			errors = append(errors, err.Error())
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to start session workers: %v", errors)
+	}
+
+	s.numWorkers = targetWorkers
+	return nil
+}
+
+// startWorkerProcessWithConfig starts a worker process with specific configuration
+func (s *Supervisor) startWorkerProcessWithConfig(id int, cfg *WorkerConfig) (llmclient.ModelConfig, error) {
+	workerBinary := filepath.Join(s.workDir, "worker")
+
+	// Determine provider and model
+	var modelCfg llmclient.ModelConfig
+	if cfg.IsAutoProvider() && cfg.IsAutoModel() {
+		// Use random selection
+		modelCfg = s.pickLLMConfig()
+	} else {
+		// Use specified config
+		if !cfg.IsAutoProvider() {
+			modelCfg.Provider = cfg.Provider
+		} else {
+			modelCfg.Provider = s.pickLLMConfig().Provider
+		}
+		if !cfg.IsAutoModel() {
+			modelCfg.Model = cfg.Model
+		} else {
+			// Pick random model from the provider
+			models := llmclient.GetModelsForProvider(llmclient.Provider(modelCfg.Provider))
+			if len(models) > 0 {
+				modelCfg.Model = models[rand.Intn(len(models))]
+			}
+		}
+	}
+
+	// Start the worker process
+	cmd := exec.Command(workerBinary, "-id", fmt.Sprintf("%d", id))
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("OPENAI_API_KEY=%s", os.Getenv("OPENAI_API_KEY")),
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", os.Getenv("ANTHROPIC_API_KEY")),
+		fmt.Sprintf("GOOGLE_API_KEY=%s", os.Getenv("GOOGLE_API_KEY")),
+		fmt.Sprintf("COHERE_API_KEY=%s", os.Getenv("COHERE_API_KEY")),
+		fmt.Sprintf("MISTRAL_API_KEY=%s", os.Getenv("MISTRAL_API_KEY")),
+		fmt.Sprintf("LLM_PROVIDER=%s", modelCfg.Provider),
+		fmt.Sprintf("LLM_MODEL=%s", modelCfg.Model),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Dir = s.workDir
+
+	if err := cmd.Start(); err != nil {
+		return llmclient.ModelConfig{}, fmt.Errorf("failed to start worker %d: %v", id, err)
+	}
+
+	s.mu.Lock()
+	s.workerProcs[id-1] = cmd
+	s.mu.Unlock()
+
+	log.Printf("[Supervisor] Started session worker %d with PID %d (provider=%s, model=%s)", id, cmd.Process.Pid, modelCfg.Provider, modelCfg.Model)
+	return modelCfg, nil
 }

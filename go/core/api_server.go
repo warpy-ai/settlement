@@ -14,23 +14,28 @@ import (
 
 // APIServer handles HTTP requests for the supervisor
 type APIServer struct {
-	supervisor *Supervisor
-	router     *mux.Router
-	tasks      map[string]*TaskResponse
-	batches    map[string]*BatchTaskResponse
-	tasksMutex sync.RWMutex
-	batchMutex sync.RWMutex
-	startTime  time.Time
+	supervisor     *Supervisor
+	router         *mux.Router
+	tasks          map[string]*TaskResponse
+	batches        map[string]*BatchTaskResponse
+	tasksMutex     sync.RWMutex
+	batchMutex     sync.RWMutex
+	startTime      time.Time
+	sessionManager *SessionManager
 }
 
 // NewAPIServer creates a new API server instance
 func NewAPIServer(supervisor *Supervisor) *APIServer {
+	sessionManager := NewSessionManager()
+	sessionManager.StartCleanupRoutine()
+
 	server := &APIServer{
-		supervisor: supervisor,
-		router:     mux.NewRouter(),
-		tasks:      make(map[string]*TaskResponse),
-		batches:    make(map[string]*BatchTaskResponse),
-		startTime:  time.Now(),
+		supervisor:     supervisor,
+		router:         mux.NewRouter(),
+		tasks:          make(map[string]*TaskResponse),
+		batches:        make(map[string]*BatchTaskResponse),
+		startTime:      time.Now(),
+		sessionManager: sessionManager,
 	}
 
 	// Register routes
@@ -39,7 +44,13 @@ func NewAPIServer(supervisor *Supervisor) *APIServer {
 }
 
 func (s *APIServer) setupRoutes() {
-	// Task management endpoints
+	// Session management endpoints (new)
+	s.router.HandleFunc("/api/v1/init", s.handleInit).Methods("POST")
+	s.router.HandleFunc("/api/v1/sessions/{token}", s.handleGetSession).Methods("GET")
+	s.router.HandleFunc("/api/v1/sessions/{token}", s.handleDeleteSession).Methods("DELETE")
+	s.router.HandleFunc("/api/v1/submit", s.handleSessionSubmit).Methods("POST")
+
+	// Task management endpoints (legacy - still works without session)
 	s.router.HandleFunc("/api/v1/tasks", s.handleSubmitTask).Methods("POST")
 	s.router.HandleFunc("/api/v1/tasks/{taskId}", s.handleGetTaskStatus).Methods("GET")
 	s.router.HandleFunc("/api/v1/tasks/{taskId}/cancel", s.handleCancelTask).Methods("POST")
@@ -471,6 +482,269 @@ func (s *APIServer) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 func (s *APIServer) handleCancelBatch(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement batch cancellation
 	s.sendError(w, http.StatusNotImplemented, "Batch cancellation not implemented")
+}
+
+// handleInit creates a new session with worker configuration
+func (s *APIServer) handleInit(w http.ResponseWriter, r *http.Request) {
+	var req SessionInitRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&req); err != nil {
+		log.Printf("[APIServer] Error decoding init request: %v", err)
+		s.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+
+	// Create session
+	session, err := s.sessionManager.CreateSession(&req)
+	if err != nil {
+		s.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Build worker configs summary
+	workerConfigs := make(map[int]string)
+	for i := 0; i < session.WorkerCount; i++ {
+		cfg := session.GetWorkerConfig(i)
+		provider := cfg.Provider
+		if provider == "" || provider == "auto" {
+			provider = "auto"
+		}
+		model := cfg.Model
+		if model == "" || model == "auto" {
+			model = "auto"
+		}
+		workerConfigs[i] = fmt.Sprintf("%s/%s", provider, model)
+	}
+
+	response := SessionInitResponse{
+		Token:         session.Token,
+		WorkerCount:   session.WorkerCount,
+		WorkerConfigs: workerConfigs,
+		AllowOverride: session.AllowOverride,
+		ExpiresAt:     session.ExpiresAt,
+		CreatedAt:     session.CreatedAt,
+	}
+
+	log.Printf("[APIServer] Created session %s with %d workers", session.Token[:16]+"...", session.WorkerCount)
+	s.sendJSON(w, http.StatusCreated, response)
+}
+
+// handleGetSession returns session configuration
+func (s *APIServer) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	token := vars["token"]
+
+	session, err := s.sessionManager.GetSession(token)
+	if err != nil {
+		s.sendError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	s.sendJSON(w, http.StatusOK, session)
+}
+
+// handleDeleteSession deletes a session
+func (s *APIServer) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	token := vars["token"]
+
+	_, err := s.sessionManager.GetSession(token)
+	if err != nil {
+		s.sendError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	s.sessionManager.DeleteSession(token)
+	s.sendJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleSessionSubmit handles task submission with a session token
+func (s *APIServer) handleSessionSubmit(w http.ResponseWriter, r *http.Request) {
+	var req SessionSubmitRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&req); err != nil {
+		log.Printf("[APIServer] Error decoding submit request: %v", err)
+		s.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+
+	// Validate content
+	if req.Content == "" {
+		s.sendError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	// Get session
+	session, err := s.sessionManager.GetSession(req.Token)
+	if err != nil {
+		s.sendError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid or expired session token: %v", err))
+		return
+	}
+
+	// Check if model override is allowed
+	if len(req.ModelPreferences) > 0 && !session.AllowOverride {
+		s.sendError(w, http.StatusForbidden, "Model overrides are not allowed for this session")
+		return
+	}
+
+	// Create task response
+	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
+	taskResponse := &TaskResponse{
+		TaskID:      taskID,
+		Status:      "pending",
+		Progress:    0,
+		WorkerCount: session.WorkerCount,
+		StartedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// Store task response
+	s.tasksMutex.Lock()
+	s.tasks[taskID] = taskResponse
+	s.tasksMutex.Unlock()
+
+	// Process task with session config in background
+	go s.processSessionTask(taskID, &req, session)
+
+	log.Printf("[APIServer] Submitted task %s with session %s", taskID, req.Token[:16]+"...")
+	s.sendJSON(w, http.StatusAccepted, taskResponse)
+}
+
+// processSessionTask processes a task using session configuration
+func (s *APIServer) processSessionTask(taskID string, req *SessionSubmitRequest, session *SessionConfig) {
+	// Update task status
+	s.updateTaskStatus(taskID, "processing", nil)
+
+	ctx := context.Background()
+
+	// Build model preferences from session config (can be overridden if allowed)
+	// IMPORTANT: This must happen BEFORE starting workers so they use the correct providers
+	modelPreferences := make(map[int]string)
+	for i := 0; i < session.WorkerCount; i++ {
+		cfg := session.GetWorkerConfig(i)
+		if !cfg.IsAutoProvider() {
+			modelPreferences[i] = cfg.Provider
+		}
+	}
+
+	// Apply request overrides if allowed
+	if session.AllowOverride && len(req.ModelPreferences) > 0 {
+		for k, v := range req.ModelPreferences {
+			modelPreferences[k] = v
+		}
+	}
+
+	// Apply model preferences to session's worker configs BEFORE starting workers
+	// This ensures workers are started with the correct providers/models
+	if len(modelPreferences) > 0 {
+		if session.Workers == nil {
+			session.Workers = make(map[int]*WorkerConfig)
+		}
+		for position, provider := range modelPreferences {
+			if session.Workers[position] == nil {
+				session.Workers[position] = &WorkerConfig{}
+			}
+			session.Workers[position].Provider = provider
+			log.Printf("[APIServer] Set worker %d to provider: %s", position, provider)
+		}
+	}
+
+	// Start workers on-demand with session config (now with correct providers)
+	if err := s.supervisor.StartSessionWorkers(ctx, session); err != nil {
+		log.Printf("[APIServer] Failed to start session workers: %v", err)
+		s.updateTaskStatus(taskID, "failed", err)
+		return
+	}
+
+	// Build consensus config from session
+	consensusConfig := ConsensusConfig{
+		MinimumAgreement:       0.66, // Default
+		TimeoutDuration:        60 * time.Second,
+		VotingStrategy:         "majority",
+		MatchStrategy:          SemanticMatch,
+		ExtractMergedReasoning: true,
+	}
+
+	if session.ConsensusRules != nil {
+		if session.ConsensusRules.MinimumAgreement > 0 {
+			consensusConfig.MinimumAgreement = session.ConsensusRules.MinimumAgreement
+		}
+		if session.ConsensusRules.MatchStrategy != nil {
+			consensusConfig.MatchStrategy = *session.ConsensusRules.MatchStrategy
+		}
+		if session.ConsensusRules.NumericTolerance > 0 {
+			consensusConfig.NumericTolerance = session.ConsensusRules.NumericTolerance
+		}
+		if session.ConsensusRules.Timeout != nil {
+			consensusConfig.TimeoutDuration = session.ConsensusRules.Timeout.ToDuration()
+		}
+	}
+
+	// Apply request rule overrides
+	if req.Rules != nil {
+		if req.Rules.MinimumAgreement != nil {
+			consensusConfig.MinimumAgreement = *req.Rules.MinimumAgreement
+		}
+		if req.Rules.MatchStrategy != nil {
+			consensusConfig.MatchStrategy = *req.Rules.MatchStrategy
+		}
+		if req.Rules.NumericTolerance != nil {
+			consensusConfig.NumericTolerance = *req.Rules.NumericTolerance
+		}
+	}
+
+	// Build worker system prompts from session
+	workerSystemPrompts := make(map[int]string)
+	for i := 0; i < session.WorkerCount; i++ {
+		cfg := session.GetWorkerConfig(i)
+		if !cfg.IsAutoSystemPrompt() {
+			workerSystemPrompts[i] = cfg.SystemPrompt
+		}
+	}
+
+	// Create instruction with session config
+	instruction := &Instruction{
+		TaskID:             taskID,
+		Content:            req.Content,
+		WorkerCount:        session.WorkerCount,
+		ModelPreferences:   modelPreferences,
+		Consensus:          consensusConfig,
+		WorkerSystemPrompts: workerSystemPrompts,
+	}
+
+	// Apply constraints if provided
+	if req.Constraints != nil {
+		if req.Constraints.WorkerCount != nil {
+			// Cannot override worker count from session
+			log.Printf("[APIServer] Worker count override ignored for session task")
+		}
+		if req.Constraints.Timeout != nil {
+			instruction.Consensus.TimeoutDuration = req.Constraints.Timeout.ToDuration()
+		}
+	}
+
+	// Add instruction to queue manager
+	if err := s.supervisor.queueManager.AddInstruction(instruction); err != nil {
+		log.Printf("[APIServer] Failed to queue session task: %v", err)
+		s.updateTaskStatus(taskID, "failed", err)
+		return
+	}
+
+	// Monitor results
+	resultsChan := s.supervisor.GetResults()
+	for result := range resultsChan {
+		if result.Error != nil {
+			s.updateTaskStatus(taskID, "failed", result.Error)
+			return
+		}
+		s.updateTaskStatus(taskID, "completed", nil)
+		s.updateTaskResult(taskID, result.Result)
+		return
+	}
 }
 
 func (s *APIServer) updateBatchStatus(batchID, status string, err error) {

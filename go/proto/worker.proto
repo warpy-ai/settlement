@@ -11,6 +11,9 @@ message TaskRequest {
   string task_id = 1;
   string content = 2;
   string api_key = 3;
+  string system_prompt = 4;     // Custom system prompt (optional, empty = use default)
+  double temperature = 5;       // Model temperature (0 = use default)
+  int32 max_tokens = 6;         // Max tokens for response (0 = use default)
 }
 
 message TaskResponse {
