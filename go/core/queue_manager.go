@@ -241,65 +241,139 @@ func (qm *QueueManager) tryProcessInstruction(instruction *Instruction, retryCou
 			continue
 		}
 
-		// Shuffle to avoid always picking the same providers first
-		rand.Shuffle(len(availableWorkers), func(i, j int) {
-			availableWorkers[i], availableWorkers[j] = availableWorkers[j], availableWorkers[i]
-		})
-
-		// Filter out previously used workers and enforce provider diversity:
-		// - Hard cap: max 2 workers per provider on a task.
-		// - If we can't reach the requested count under the cap, do a second pass to fill remaining slots.
-		workers = make([]*WorkerState, 0)
-		providerCounts := make(map[string]int)
-
-		// First pass: enforce diversity cap
+		// Filter out previously used workers
+		unusedWorkers := make([]*WorkerState, 0)
 		for _, w := range availableWorkers {
 			if usedWorkers[w.ID] {
 				log.Printf("[QueueManager] Skipping previously used worker %s", w.ID)
 				continue
 			}
+			unusedWorkers = append(unusedWorkers, w)
+		}
 
+		// Group workers by provider for preference-based selection
+		workersByProvider := make(map[string][]*WorkerState)
+		for _, w := range unusedWorkers {
 			provider := strings.ToLower(w.Provider)
 			if provider == "" {
 				provider = "unknown"
 			}
+			workersByProvider[provider] = append(workersByProvider[provider], w)
+		}
 
-			if providerCounts[provider] >= 2 {
-				log.Printf("[QueueManager] Skipping worker %s due to provider cap (%s)", w.ID, provider)
-				continue
+		log.Printf("[QueueManager] Available workers by provider: %v", func() map[string]int {
+			counts := make(map[string]int)
+			for p, ws := range workersByProvider {
+				counts[p] = len(ws)
 			}
+			return counts
+		}())
 
-			workers = append(workers, w)
-			providerCounts[provider]++
-			log.Printf("[QueueManager] Selected worker %s (provider=%s, status=%s)", w.ID, provider, w.Status)
-			if len(workers) >= instruction.WorkerCount {
-				break
+		// Check if we have model preferences
+		hasPreferences := instruction.ModelPreferences != nil && len(instruction.ModelPreferences) > 0
+		if hasPreferences {
+			log.Printf("[QueueManager] Model preferences specified: %v", instruction.ModelPreferences)
+		}
+
+		workers = make([]*WorkerState, instruction.WorkerCount)
+		usedWorkerIDs := make(map[string]bool)
+		providerCounts := make(map[string]int)
+
+		// First pass: try to satisfy model preferences
+		if hasPreferences {
+			for position := 0; position < instruction.WorkerCount; position++ {
+				preferredProvider, hasPreference := instruction.ModelPreferences[position]
+				if !hasPreference || preferredProvider == "" || preferredProvider == "auto" {
+					continue // Will be filled in second pass
+				}
+
+				preferredProvider = strings.ToLower(preferredProvider)
+				providerWorkers := workersByProvider[preferredProvider]
+
+				// Find an unused worker from the preferred provider
+				for _, w := range providerWorkers {
+					if usedWorkerIDs[w.ID] {
+						continue
+					}
+					workers[position] = w
+					usedWorkerIDs[w.ID] = true
+					providerCounts[preferredProvider]++
+					log.Printf("[QueueManager] Position %d: assigned preferred worker %s (provider=%s)", position, w.ID, preferredProvider)
+					break
+				}
+
+				if workers[position] == nil {
+					log.Printf("[QueueManager] Position %d: no available worker for preferred provider %s", position, preferredProvider)
+				}
 			}
 		}
 
-		// Second pass: if still short, fill remaining slots ignoring the cap to avoid starvation
-		if len(workers) < instruction.WorkerCount {
-			for _, w := range availableWorkers {
-				if usedWorkers[w.ID] {
+		// Second pass: fill remaining positions with available workers (applying diversity cap)
+		// Shuffle remaining workers for randomness
+		remainingWorkers := make([]*WorkerState, 0)
+		for _, w := range unusedWorkers {
+			if !usedWorkerIDs[w.ID] {
+				remainingWorkers = append(remainingWorkers, w)
+			}
+		}
+		rand.Shuffle(len(remainingWorkers), func(i, j int) {
+			remainingWorkers[i], remainingWorkers[j] = remainingWorkers[j], remainingWorkers[i]
+		})
+
+		for position := 0; position < instruction.WorkerCount; position++ {
+			if workers[position] != nil {
+				continue // Already filled by preference
+			}
+
+			// Find an available worker respecting provider diversity (max 2 per provider)
+			for _, w := range remainingWorkers {
+				if usedWorkerIDs[w.ID] {
 					continue
 				}
-				alreadyChosen := false
-				for _, cw := range workers {
-					if cw.ID == w.ID {
-						alreadyChosen = true
-						break
+
+				provider := strings.ToLower(w.Provider)
+				if provider == "" {
+					provider = "unknown"
+				}
+
+				if providerCounts[provider] >= 2 {
+					continue // Skip due to provider cap
+				}
+
+				workers[position] = w
+				usedWorkerIDs[w.ID] = true
+				providerCounts[provider]++
+				log.Printf("[QueueManager] Position %d: assigned worker %s (provider=%s, auto-selected)", position, w.ID, provider)
+				break
+			}
+
+			// If still not filled, try again ignoring provider cap
+			if workers[position] == nil {
+				for _, w := range remainingWorkers {
+					if usedWorkerIDs[w.ID] {
+						continue
 					}
-				}
-				if alreadyChosen {
-					continue
-				}
-				workers = append(workers, w)
-				log.Printf("[QueueManager] Added worker %s after relaxing provider cap", w.ID)
-				if len(workers) >= instruction.WorkerCount {
+					workers[position] = w
+					usedWorkerIDs[w.ID] = true
+					provider := strings.ToLower(w.Provider)
+					if provider == "" {
+						provider = "unknown"
+					}
+					providerCounts[provider]++
+					log.Printf("[QueueManager] Position %d: assigned worker %s after relaxing provider cap", position, w.ID)
 					break
 				}
 			}
 		}
+
+		// Convert to slice without nil entries and count filled positions
+		filledWorkers := make([]*WorkerState, 0)
+		for _, w := range workers {
+			if w != nil {
+				filledWorkers = append(filledWorkers, w)
+			}
+		}
+		workers = filledWorkers
 
 		// If we still don't have enough after both passes, retry the allocation loop.
 		if len(workers) < instruction.WorkerCount {

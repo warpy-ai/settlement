@@ -7,11 +7,12 @@ import (
 
 // Instruction represents a task with its requirements and results
 type Instruction struct {
-	TaskID      string
-	Content     string
-	WorkerCount int // Must be odd number as per settlement requirements
-	Results     []WorkerResult
-	Consensus   ConsensusConfig
+	TaskID           string
+	Content          string
+	WorkerCount      int // Must be odd number as per settlement requirements
+	Results          []WorkerResult
+	Consensus        ConsensusConfig
+	ModelPreferences map[int]string // Optional per-position provider preferences (position 0-4 -> provider name)
 }
 
 // WorkerResponse represents a structured response from a worker

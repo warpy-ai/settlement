@@ -194,9 +194,10 @@ func (s *APIServer) processTask(taskID string, submission *TaskSubmission) {
 
 	// Create instruction from submission with the API's taskID
 	instruction := &Instruction{
-		TaskID:      taskID, // Use the API's taskID, not a new one
-		Content:     submission.Content,
-		WorkerCount: requirements.WorkerCount,
+		TaskID:           taskID, // Use the API's taskID, not a new one
+		Content:          submission.Content,
+		WorkerCount:      requirements.WorkerCount,
+		ModelPreferences: submission.ModelPreferences, // Pass through model preferences
 		Consensus: ConsensusConfig{
 			MinimumAgreement:       requirements.MinimumAgreement,
 			TimeoutDuration:        time.Duration(requirements.TimeoutSeconds) * time.Second,
