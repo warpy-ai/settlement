@@ -66,6 +66,11 @@ func Init(dir string) (*Store, error) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("verdicts/\n"), 0o644); err != nil {
 		return nil, err
 	}
+	// Decisions recorded on parallel branches (worktree-based multi-task
+	// hosts) are append-only; union merge combines them without conflicts.
+	if err := os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("decisions.jsonl merge=union\n"), 0o644); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 

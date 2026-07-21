@@ -119,7 +119,18 @@ func cmdPanel(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	panel := settle.BuildPanel(cfg, ledger, diff)
+	stampBranch(&panel)
 	return printJSON(stdout, stderr, panel)
+}
+
+// stampBranch records the current branch on the panel subject so decisions
+// made in parallel worktrees identify the branch they belong to.
+func stampBranch(panel *settle.PanelSpec) {
+	if cwd, err := os.Getwd(); err == nil {
+		if info, ok := settle.FindGitInfo(cwd); ok {
+			panel.Subject.Branch = info.Branch
+		}
+	}
 }
 
 func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -165,6 +176,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		panel = settle.BuildPanel(cfg, ledger, diff)
+		stampBranch(&panel)
 	}
 
 	verdicts, err := settle.LoadVerdicts(store.VerdictsDir(*taskID))
@@ -205,12 +217,22 @@ func cmdOutcome(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	decisionID := fs.String("decision", "", "decision id to grade")
 	result := fs.String("result", "", "ground truth: held or reverted")
+	force := fs.Bool("force", false, "allow grading from a linked worktree (ledger history may diverge)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if *decisionID == "" || *result == "" {
 		fmt.Fprintln(stderr, "settle outcome: --decision and --result are required")
 		return 1
+	}
+
+	// Ledger history must stay linear: grading from parallel worktrees
+	// produces conflicting ledger.json copies that cannot be merged.
+	if cwd, err := os.Getwd(); err == nil && !*force {
+		if info, ok := settle.FindGitInfo(cwd); ok && info.IsLinkedWorktree {
+			fmt.Fprintln(stderr, "settle outcome: refusing to grade from a linked worktree — run it in the main checkout after the branch merges (or pass --force)")
+			return 1
+		}
 	}
 
 	store, code := openStore(stderr)
@@ -278,8 +300,12 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 		if result == "" {
 			result = "ungraded"
 		}
-		fmt.Fprintf(stdout, "%s  %s  %-12s  agreement=%.0f%%  dissents=%d  result=%s\n",
-			d.ID, d.CreatedAt.Format("2006-01-02 15:04"), verdict, d.Outcome.Agreement*100, len(d.Outcome.Dissents), result)
+		branch := ""
+		if d.Subject.Branch != "" {
+			branch = "  branch=" + d.Subject.Branch
+		}
+		fmt.Fprintf(stdout, "%s  %s  %-12s  agreement=%.0f%%  dissents=%d  result=%s%s\n",
+			d.ID, d.CreatedAt.Format("2006-01-02 15:04"), verdict, d.Outcome.Agreement*100, len(d.Outcome.Dissents), result, branch)
 		shown++
 	}
 	return 0

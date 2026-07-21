@@ -92,6 +92,32 @@ Return ONLY this JSON object, no prose around it:
 - `confidence` in [0,1] — it weights your vote; do not inflate it.
 - `findings` may be empty for a clean approve.
 
+## Multi-task and worktree hosts (Claude Code, Cursor, …)
+
+Modern hosts develop several changes in parallel, each in its own git
+worktree. Settlement is built for that:
+
+- **Run `/settle review` inside the worktree whose change it judges.** The
+  decision record is written to that worktree's `.settlement/` and commits
+  with the branch — the review travels and merges together with the change
+  it adjudicated. (`settle init` pre-configures union merge for
+  `decisions.jsonl`, so decision logs from parallel branches combine
+  without conflicts.)
+- **Task ids are branch-scoped** — always use `review-<branch>-<date>` so
+  parallel reviews never collide in `verdicts/`.
+- **Reviews in different worktrees may run fully in parallel.** Reviewer
+  subagents are read-only; they never need worktrees of their own.
+- **One branch, one settlement.** If the host spread work across multiple
+  worktrees, settle each branch separately: one diff, one panel, one
+  decision.
+- **Grade outcomes only from the main checkout**, after the branch merges.
+  `settle outcome` refuses to run in a linked worktree (ledger history must
+  stay linear); do not override with `--force` unless you understand the
+  merge conflict you are choosing to create.
+- **If `.settlement/` is missing in a worktree** (branched before init),
+  rebase or merge the branch onto a base that has it — never run
+  `settle init` inside a worktree.
+
 ## Rules
 
 - Run reviewers in parallel; keep them independent.
