@@ -6,6 +6,18 @@
 
 This is a new version of [settlementIO](https://github.com/jucasoliveira/settlementIO)
 
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `go/` | The settlement engine: multi-LLM consensus service, shared `consensus` library, and the local `settle` CLI |
+| `skill/settle/` | The platform-agnostic `/settle` skill: persona review panels for code changes, adjudicated by the consensus engine |
+| `frontend/` | React dashboard (parked; future cloud tier) |
+| `docs/` | Design docs: [modernization roadmap](docs/AI_MODERNIZATION_ROADMAP.md), [graph agents design](docs/SETTLEMENT_GRAPH_AGENTS_DESIGN.md), [skill/memory/punitive design](docs/SETTLE_SKILL_MEMORY_AND_PUNITIVE.md) |
+| `settlement_2024.tex` | The original whitepaper (rendered: `settlement_2024.pdf`) |
+
+The sections below are the original whitepaper content.
+
 ### 1. Introduction
 
 In an era where decision-making processes increasingly intersect with technological advancements, the integration of Artificial Intelligence (AI) in these processes has become not just a possibility, but a necessity. The concept of an AI multi-agent consent engine represents a transformative step in this direction, offering a sophisticated framework for decentralized decision-making across various domains. This document aims to elucidate the design, functionality, and potential applications of such an engine, particularly in contexts that demand nuanced and collective decision-making capabilities, like content moderation and law voting.

@@ -24,4 +24,7 @@ supervisor.log
 
 # Worker logs
 worker*.log
-worker
+/worker
+
+# Compiled binaries (built from cmd/)
+/settlement

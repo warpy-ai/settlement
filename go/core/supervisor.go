@@ -280,7 +280,7 @@ func (s *Supervisor) processWorkerTasks(ctx context.Context, workerID int) {
 				log.Printf("[Supervisor] Worker %d completed task: %s (%d/%d completed)",
 					workerID+1, taskID, s.taskStatus.Completed, s.taskStatus.Total)
 			case pb.WorkerStatus_FAILED:
-				s.results <- TaskResult{Error: fmt.Errorf(resp.Error)}
+				s.results <- TaskResult{Error: fmt.Errorf("%s", resp.Error)}
 				s.taskStatus.markCompleted()
 				log.Printf("[Supervisor] Worker %d failed task: %s (%d/%d completed)",
 					workerID+1, taskID, s.taskStatus.Completed, s.taskStatus.Total)
