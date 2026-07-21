@@ -1,6 +1,22 @@
 package settle
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestNewDecisionIDUniquePerNanosecond(t *testing.T) {
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	// Same diff, same second, different nanosecond — must not collide.
+	a := newDecisionID("deadbeef", base)
+	b := newDecisionID("deadbeef", base.Add(time.Nanosecond))
+	if a == b {
+		t.Fatalf("same-diff same-second decisions collided: %s", a)
+	}
+	if a[:len("dec_20260101T120000")] != "dec_20260101T120000" {
+		t.Fatalf("id lost its readable timestamp prefix: %s", a)
+	}
+}
 
 func guidedDecision(id string, guidedBy ...string) Decision {
 	d := decisionAt(id, 1, []string{"api/handler.go"}, []Verdict{verdict("security", "approve", 0.9)}, nil)

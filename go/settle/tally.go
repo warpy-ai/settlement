@@ -2,11 +2,14 @@ package settle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,10 +24,11 @@ func RunTally(panel PanelSpec, verdicts []Verdict, cfg Config) (Decision, error)
 	if err != nil {
 		return Decision{}, err
 	}
+	now := time.Now().UTC()
 	return Decision{
 		Schema:    SchemaDecision,
-		ID:        newDecisionID(panel.Subject.DiffSHA256),
-		CreatedAt: time.Now().UTC(),
+		ID:        newDecisionID(panel.Subject.DiffSHA256, now),
+		CreatedAt: now,
 		Subject:   panel.Subject,
 		Panel:     panel.Seats,
 		Verdicts:  verdicts,
@@ -114,13 +118,12 @@ func LoadVerdicts(dir string) ([]Verdict, error) {
 	return verdicts, nil
 }
 
-func newDecisionID(diffHash string) string {
-	suffix := diffHash
-	if len(suffix) > 8 {
-		suffix = suffix[:8]
-	}
-	if suffix == "" {
-		suffix = "nodiff"
-	}
-	return fmt.Sprintf("dec_%s_%s", time.Now().UTC().Format("20060102T150405"), suffix)
+// newDecisionID is unique per decision: the second-resolution timestamp keeps
+// ids sortable and readable, while the suffix hashes the diff together with
+// the creation time's nanoseconds so two decisions over the same diff within
+// the same second do not collide (a collision would make `settle outcome` and
+// `settle show` act on whichever record GetDecision found first).
+func newDecisionID(diffHash string, t time.Time) string {
+	sum := sha256.Sum256([]byte(diffHash + ":" + strconv.FormatInt(t.UnixNano(), 10)))
+	return fmt.Sprintf("dec_%s_%s", t.UTC().Format("20060102T150405"), hex.EncodeToString(sum[:])[:8])
 }
