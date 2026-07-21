@@ -12,9 +12,8 @@ Thumbs.db
 !.env.example
 
 # Go build output (binaries are built from go/cmd/)
-go/settlement
-go/settle
-go/worker
+/go/settlement
+/go/worker
 *.exe
 *.dll
 *.dylib
