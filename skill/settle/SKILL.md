@@ -234,6 +234,28 @@ applied to procedures — bad guidance is pruned by evidence. Inspect it with:
 
     settle skills
 
+## Autonomous loops — trust is earned
+
+If you run `/settle` unattended on a loop (e.g. a drift or coverage sweep that
+proposes changes on a schedule), that loop earns autonomy by track record
+rather than being granted it. Attribute a loop's reviews to it and check its
+trust before acting on its behalf.
+
+- **Attribute the review:** tally with `--loop <name>`
+  (`settle tally --task <id> --panel <p> --loop drift`). The loop name is
+  recorded on the decision; grading it later moves the loop's trust.
+- **Trust rungs, lowest to highest:** `propose-only` → `auto-merge-trivial`
+  → `auto-merge-class`. A loop starts at `propose-only`. Five consecutive
+  held outcomes earn one promotion; **any revert demotes it one rung.**
+- **Respect the rung.** Before auto-merging anything on a loop's behalf, read
+  `settle loops` and act only within its level — a `propose-only` loop may
+  open a review but never merge unattended; `auto-merge-trivial` may merge
+  only trivial changes it settled cleanly. When in doubt, propose, don't
+  merge.
+- **Grade honestly.** Trust is only meaningful if `settle outcome` reflects
+  reality — record `reverted` when a loop's merged change had to be backed
+  out, so the dial turns down as designed.
+
 ## Multi-task and worktree hosts (Claude Code, Cursor, …)
 
 Modern hosts develop several changes in parallel, each in its own git

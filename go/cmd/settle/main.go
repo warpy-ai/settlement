@@ -31,6 +31,7 @@ Usage:
   settle memory <candidates|propose|list|show>  Consolidate decisions into settled memory
   settle ledger                              Print persona voting powers
   settle skills                              Print memory-note adequacy scores
+  settle loops                               Print autonomous-loop trust levels
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
 
@@ -66,6 +67,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdLedger(stdout, stderr)
 	case "skills":
 		return cmdSkills(stdout, stderr)
+	case "loops":
+		return cmdLoops(stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprintln(stdout, usage)
 		return 0
@@ -102,7 +105,7 @@ func cmdInit(stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "initialized %s\n", store.Root)
-	fmt.Fprintln(stdout, "commit config.json, ledger.json, skills.json, decisions.jsonl, and memory/; verdicts/ stays untracked scratch")
+	fmt.Fprintln(stdout, "commit config.json, ledger.json, skills.json, loops.json, decisions.jsonl, and memory/; verdicts/ stays untracked scratch")
 	return 0
 }
 
@@ -171,6 +174,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	taskID := fs.String("task", "", "task id: verdicts are read from .settlement/verdicts/<id>/")
 	panelFile := fs.String("panel", "", "panel spec JSON file (default: rebuild from --diff-file)")
 	diffFile := fs.String("diff-file", "", "unified diff file, used when --panel is not given")
+	loop := fs.String("loop", "", "name of the autonomous loop that proposed this change (moves its trust when graded)")
 	noRecord := fs.Bool("no-record", false, "tally without appending to decisions.jsonl or touching the ledger")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -220,6 +224,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	decision.Origin = *loop
 
 	if !*noRecord {
 		if err := store.AppendDecision(decision); err != nil {
@@ -321,6 +326,25 @@ func cmdOutcome(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "guidance %s adequacy=%.2f (held=%d reverted=%d)%s\n",
 					id, e.Adequacy, e.Held, e.Reverted, status)
 			}
+		}
+	}
+
+	// A change proposed by an autonomous loop moves that loop's trust: held
+	// extends its clean streak toward promotion, reverted demotes it a rung.
+	if decision.Origin != "" {
+		ll, err := store.LoadLoopLedger()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if err := settle.ApplyLoopOutcome(&ll, decision.Origin, *result, settle.DefaultLoopParams()); err != nil {
+			return fail(stderr, err)
+		}
+		if err := store.SaveLoopLedger(ll); err != nil {
+			return fail(stderr, err)
+		}
+		if e := ll.Loops[decision.Origin]; e != nil {
+			fmt.Fprintf(stdout, "loop %s trust=%s (held=%d reverted=%d streak=%d)\n",
+				decision.Origin, e.Trust, e.Held, e.Reverted, e.CleanStreak)
 		}
 	}
 
@@ -614,6 +638,32 @@ func cmdSkills(stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s  adequacy=%.2f  uses=%d held=%d reverted=%d%s\n",
 			id, e.Adequacy, e.Uses, e.Held, e.Reverted, status)
+	}
+	return 0
+}
+
+func cmdLoops(stdout, stderr io.Writer) int {
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	ll, err := store.LoadLoopLedger()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(ll.Loops) == 0 {
+		fmt.Fprintln(stdout, "no loops tracked yet (tally with --loop <name>, then grade the outcome)")
+		return 0
+	}
+	names := make([]string, 0, len(ll.Loops))
+	for name := range ll.Loops {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		e := ll.Loops[name]
+		fmt.Fprintf(stdout, "%-16s trust=%-18s merges=%d held=%d reverted=%d streak=%d\n",
+			name, e.Trust, e.Merges, e.Held, e.Reverted, e.CleanStreak)
 	}
 	return 0
 }

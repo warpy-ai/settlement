@@ -156,4 +156,28 @@ assert sl["reverted"] == 1 and sl["uses"] == 1, sl
 print("adequacy OK:", round(sl["adequacy"], 3))
 PY
 
+# --- loop trust: five clean holds promote a loop a rung; a revert demotes it ---
+for i in 1 2 3 4 5; do
+  printf 'diff --git a/loop%d.go b/loop%d.go\n--- a/loop%d.go\n+++ b/loop%d.go\n@@ -1 +1,2 @@\n+l%d\n' "$i" "$i" "$i" "$i" "$i" > "loop$i.patch"
+  "$SETTLE" panel --diff-file "loop$i.patch" > "loop$i-panel.json"
+  mkdir -p ".settlement/verdicts/loop$i"
+  for persona in correctness security api-contract; do
+    echo "{\"schema\":\"settle/verdict@1\",\"persona\":\"$persona\",\"decision\":\"approve\",\"confidence\":0.9,\"reasoning\":\"trivial and correct\"}" > ".settlement/verdicts/loop$i/$persona.json"
+  done
+  LID="$("$SETTLE" tally --task "loop$i" --panel "loop$i-panel.json" --loop drift 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  "$SETTLE" outcome --decision "$LID" --result held >/dev/null
+done
+"$SETTLE" loops | grep drift | grep -q "auto-merge-trivial"
+# One revert demotes drift back to propose-only.
+printf 'diff --git a/loopr.go b/loopr.go\n--- a/loopr.go\n+++ b/loopr.go\n@@ -1 +1,2 @@\n+bad\n' > loopr.patch
+"$SETTLE" panel --diff-file loopr.patch > loopr-panel.json
+mkdir -p .settlement/verdicts/loopr
+for persona in correctness security api-contract; do
+  echo "{\"schema\":\"settle/verdict@1\",\"persona\":\"$persona\",\"decision\":\"approve\",\"confidence\":0.9,\"reasoning\":\"looked fine\"}" > ".settlement/verdicts/loopr/$persona.json"
+done
+RID="$("$SETTLE" tally --task loopr --panel loopr-panel.json --loop drift 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+"$SETTLE" outcome --decision "$RID" --result reverted >/dev/null
+"$SETTLE" loops | grep drift | grep -q "propose-only"
+echo "loops OK"
+
 echo "settle dry run: PASS"

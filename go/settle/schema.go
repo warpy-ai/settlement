@@ -135,6 +135,9 @@ type Decision struct {
 	Panel     []PanelSeat `json:"panel"`
 	Verdicts  []Verdict   `json:"verdicts"`
 	Outcome   Outcome     `json:"outcome"`
+	// Origin names the autonomous loop that proposed this change, if any.
+	// Grading the decision moves that loop's trust (docs §3.3).
+	Origin string `json:"origin,omitempty"`
 	// Result is ground truth recorded later by `settle outcome`
 	// ("held" or "reverted"); empty until then.
 	Result string `json:"result,omitempty"`
