@@ -28,6 +28,7 @@ Usage:
   settle recall [--query Q] [--file F,F]     Recall past decisions relevant to files/terms
                 [--diff-file D] [-n N] [--json]
   settle why    ID | --file F                Explain a decision, or a file's settled history
+  settle memory <candidates|propose|list|show>  Consolidate decisions into settled memory
   settle ledger                              Print persona voting powers
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
@@ -58,6 +59,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdRecall(args[1:], stdin, stdout, stderr)
 	case "why":
 		return cmdWhy(args[1:], stdout, stderr)
+	case "memory":
+		return cmdMemory(args[1:], stdin, stdout, stderr)
 	case "ledger":
 		return cmdLedger(stdout, stderr)
 	case "help", "-h", "--help":
