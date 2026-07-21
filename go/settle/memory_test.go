@@ -128,3 +128,63 @@ func feedIDs(feed []EpisodeDigest) []string {
 	}
 	return ids
 }
+
+func proposedNote() MemoryNote {
+	return NewMemoryNote(
+		MemoryProposal{Scope: "api", Claim: "The Allow header is required on 405 responses.", Cites: []string{"dec-aaa"}},
+		OracleResult{Supported: true, Score: 1},
+		time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+	)
+}
+
+func memoryVerdicts(decision string) []Verdict {
+	var vs []Verdict
+	for _, p := range []string{"correctness", "security", "api-contract"} {
+		vs = append(vs, verdict(p, decision, 0.9))
+	}
+	return vs
+}
+
+func TestSettleMemoryApproveSettles(t *testing.T) {
+	cfg := DefaultConfig()
+	ledger := Ledger{Personas: map[string]*LedgerEntry{}}
+	note := proposedNote()
+	panel := BuildMemoryPanel(cfg, ledger, note)
+	if len(panel.Seats) != MemoryPanelSize {
+		t.Fatalf("expected %d seats, got %d", MemoryPanelSize, len(panel.Seats))
+	}
+
+	if err := SettleMemory(&note, panel, memoryVerdicts(VerdictApprove), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if note.Status != MemSettled {
+		t.Fatalf("unanimous approve should settle, got %s", note.Status)
+	}
+	if note.Settlement == nil || !note.Settlement.Reached {
+		t.Fatalf("expected settlement outcome recorded, got %+v", note.Settlement)
+	}
+}
+
+func TestSettleMemoryRejectRejects(t *testing.T) {
+	cfg := DefaultConfig()
+	note := proposedNote()
+	panel := BuildMemoryPanel(cfg, Ledger{Personas: map[string]*LedgerEntry{}}, note)
+
+	if err := SettleMemory(&note, panel, memoryVerdicts(VerdictReject), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if note.Status != MemRejected {
+		t.Fatalf("unanimous reject should reject the note, got %s", note.Status)
+	}
+}
+
+func TestSettleMemoryRefusesNonProposed(t *testing.T) {
+	cfg := DefaultConfig()
+	note := proposedNote()
+	note.Status = MemSettled
+	panel := BuildMemoryPanel(cfg, Ledger{Personas: map[string]*LedgerEntry{}}, note)
+
+	if err := SettleMemory(&note, panel, memoryVerdicts(VerdictApprove), cfg); err == nil {
+		t.Fatal("settling an already-settled note should error")
+	}
+}

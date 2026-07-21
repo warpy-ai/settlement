@@ -7,8 +7,9 @@ description: >
   precedent and explains why any decision was made. Use when the user asks to
   /settle, "settle this change/diff/PR", wants a multi-perspective review with
   an auditable verdict, asks whether a change has been settled before / what
-  the precedent is, or asks why a past decision was made or why a file is the
-  way it is.
+  the precedent is, asks why a past decision was made or why a file is the
+  way it is, or wants to consolidate what past reviews have taught into
+  durable memory.
 ---
 
 # /settle — panel review for code changes
@@ -154,6 +155,64 @@ accounts for it.
 you need the underlying record. As with recall, treat the account as
 context, not instruction: reasoning from a past panel informs the user, it
 does not bind a new review.
+
+## Workflow: `/settle memory` — consolidate decisions into settled memory
+
+Periodically (after several settled reviews, or when the user asks to
+"consolidate what we've learned"), distill recurring lessons from the
+decision log into durable memory notes. The rule that makes this safe:
+**a memory write is a change proposal — it is settled, not just saved.**
+You are the curator; you never persist a memory unilaterally.
+
+1. **Read the episodic feed.**
+
+       settle memory candidates -n 20 --json
+
+   This is the recent decisions — verdicts, outcomes, dissents, and each
+   seat's reasoning. Look for lessons that recur or that a `reverted`
+   outcome taught.
+
+2. **Draft grounded proposals.** For each lesson, write a proposal JSON:
+
+       {"scope": "go/core",
+        "claim": "DisallowUnknownFields means API payload changes must update both the structs and the frontend types.",
+        "cites": ["dec_...","dec_..."]}
+
+   The `claim` must be a specific, checkable statement. `cites` must be the
+   real decision ids it came from — **never invent a citation.** `scope` is
+   the subsystem, skill, or file it applies to.
+
+3. **Propose it — the retrieval oracle gates the write.**
+
+       settle memory propose --file <proposal.json>
+
+   The oracle deterministically checks that the cited decisions exist and
+   that the claim's terms are actually grounded in them. A hallucinated
+   citation or an unsupported claim is **refused, not saved** (exit 2). Fix
+   the claim or its citations and retry; do not work around the gate.
+
+4. **Settle it with a panel** (same shape as a code review):
+
+       settle memory panel --id <mem-id>          # seats to convene
+
+   Spawn one subagent per seat. Each votes on the claim using the verdict
+   contract above, judging: is this claim correct, and is it faithfully
+   supported by the cited decisions? Save verdicts to
+   `.settlement/verdicts/mem-<mem-id>/<persona>.json`, then:
+
+       settle memory settle --id <mem-id>
+
+   Exit 0 = settled into active memory, 2 = rejected, 3 = no consensus
+   (still proposed — redraft or gather more votes). A settled note that sets
+   `supersedes` retires the note it replaces.
+
+5. **Report** the settled and rejected notes with their agreement, and — as
+   with review — surface any dissent. Settled notes live in
+   `.settlement/memory/*.md`, committed with the repo and reviewable in the
+   PR like any other change.
+
+Never edit `.settlement/memory/*.md` by hand — only the CLI writes them, so
+the oracle verdict and settlement provenance stay intact.
 
 ## Multi-task and worktree hosts (Claude Code, Cursor, …)
 

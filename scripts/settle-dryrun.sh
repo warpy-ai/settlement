@@ -90,4 +90,31 @@ echo "$WHY" | grep -q "result: reverted"
 echo "$WHY" | grep -q "\[DISSENT\]"
 "$SETTLE" why --file api/handler.go | grep -q "$DECISION_ID"
 
+# --- consolidation loop: candidates -> propose (oracle) -> settle ---
+
+# The oracle refuses a claim that cites a decision that does not exist.
+if echo "{\"scope\":\"api\",\"claim\":\"Grounded claim about the handler method.\",\"cites\":[\"dec-does-not-exist\"]}" \
+	| "$SETTLE" memory propose 2>/dev/null; then
+  echo "FAIL: oracle accepted a fabricated citation"; exit 1
+fi
+
+# A claim grounded in a real cited decision is accepted as a proposal.
+CLAIM="Rejecting a non-POST method with an early return is the settled handler behavior."
+PROP="$(printf '{"scope":"api","claim":"%s","cites":["%s"]}' "$CLAIM" "$DECISION_ID")"
+MEMID="$(echo "$PROP" | "$SETTLE" memory propose | sed -n '1s/proposed \([^ ]*\).*/\1/p')"
+test -n "$MEMID" || { echo "FAIL: propose did not return a note id"; exit 1; }
+"$SETTLE" memory list --status proposed | grep -q "$MEMID"
+
+# Convene the panel and settle the proposal with canned approving verdicts.
+mkdir -p ".settlement/verdicts/mem-$MEMID"
+for persona in correctness security api-contract; do
+  cat > ".settlement/verdicts/mem-$MEMID/$persona.json" <<EOF
+{"schema":"settle/verdict@1","persona":"$persona","decision":"approve","confidence":0.9,"reasoning":"Faithful to the cited handler decision."}
+EOF
+done
+"$SETTLE" memory settle --id "$MEMID"
+"$SETTLE" memory list --status settled | grep -q "$MEMID"
+test -f ".settlement/memory/$MEMID.md"
+echo "memory OK: $MEMID"
+
 echo "settle dry run: PASS"

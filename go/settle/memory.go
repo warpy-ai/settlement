@@ -175,6 +175,56 @@ func NewMemoryNote(prop MemoryProposal, oracle OracleResult, now time.Time) Memo
 	}
 }
 
+// --- settlement ---
+
+// MemoryPanelSize is the lightweight panel that settles a consolidation
+// (docs §3: "cheap models, 3 voters").
+const MemoryPanelSize = 3
+
+// BuildMemoryPanel selects the panel that settles a memory proposal: the first
+// MemoryPanelSize configured personas, weighted by the ledger. The subject is
+// the note itself rather than a diff.
+func BuildMemoryPanel(cfg Config, ledger Ledger, note MemoryNote) PanelSpec {
+	n := MemoryPanelSize
+	if n > len(cfg.Panel.Personas) {
+		n = len(cfg.Panel.Personas)
+	}
+	seats := make([]PanelSeat, 0, n)
+	for _, persona := range cfg.Panel.Personas[:n] {
+		seats = append(seats, seatFor(persona, ledger))
+	}
+	return PanelSpec{
+		Schema:    SchemaPanel,
+		Subject:   Subject{Type: "memory", Files: []string{note.Scope}},
+		Consensus: cfg.Consensus,
+		Seats:     seats,
+	}
+}
+
+// SettleMemory adjudicates a proposed note through a panel and records the
+// result: approve settles it into active memory, anything else rejects it,
+// and no consensus leaves it proposed for another round. A memory write, like
+// a code change, only persists once it is settled.
+func SettleMemory(note *MemoryNote, panel PanelSpec, verdicts []Verdict, cfg Config) error {
+	if note.Status != MemProposed {
+		return fmt.Errorf("note %s is %s, not proposed", note.ID, note.Status)
+	}
+	outcome, err := Adjudicate(panel.Seats, verdicts, panel.Consensus, "memory consolidation: "+note.Claim)
+	if err != nil {
+		return err
+	}
+	note.Settlement = &outcome
+	switch {
+	case !outcome.Reached:
+		// Undecided: keep it proposed; the caller reports the split.
+	case outcome.Decision == VerdictApprove:
+		note.Status = MemSettled
+	default:
+		note.Status = MemRejected
+	}
+	return nil
+}
+
 // --- store ---
 
 func (s *Store) memoryDir() string { return filepath.Join(s.Root, "memory") }
