@@ -85,7 +85,8 @@ type Subject struct {
 	Type       string   `json:"type"` // "diff"
 	DiffSHA256 string   `json:"diff_sha256,omitempty"`
 	Files      []string `json:"files,omitempty"`
-	Lines      int      `json:"lines,omitempty"` // changed (+/-) line count
+	Lines      int      `json:"lines,omitempty"`  // changed (+/-) line count
+	Branch     string   `json:"branch,omitempty"` // branch under review (worktree-aware hosts)
 }
 
 // Verdict is one persona's review, written by the host assistant's subagent.
