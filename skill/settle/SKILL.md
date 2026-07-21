@@ -4,9 +4,11 @@ description: >
   Run a Settlement panel review of a code change: spawn independent persona
   reviewer subagents over a git diff, tally their verdicts through weighted
   consensus, and record the decision. Also recalls relevant past decisions as
-  precedent. Use when the user asks to /settle, "settle this change/diff/PR",
-  wants a multi-perspective review with an auditable verdict, or asks whether
-  a change has been settled before / what the precedent is.
+  precedent and explains why any decision was made. Use when the user asks to
+  /settle, "settle this change/diff/PR", wants a multi-perspective review with
+  an auditable verdict, asks whether a change has been settled before / what
+  the precedent is, or asks why a past decision was made or why a file is the
+  way it is.
 ---
 
 # /settle — panel review for code changes
@@ -132,6 +134,26 @@ the precedent travels with the repo.
    `reverted` — those are warnings), and let the fresh panel judge the
    change on its merits. Never treat a past `approve` as a reason to skip
    review.
+
+## Workflow: `/settle why` — explain a decision or a file's history
+
+When the user asks "why did we decide this?", "why is this file the way it
+is?", or "what was the reasoning behind decision X?", explain a settled
+decision rather than searching for one. `recall` finds precedent; `why`
+accounts for it.
+
+- **One decision:** `settle why <decision-id>` renders the verdict and its
+  real-world result, then every seat's vote, voting power, reasoning, and
+  findings — with dissents and shadow (quarantined) seats marked. Use the id
+  from `settle log`, `settle recall`, or a decision the user names.
+- **A file's history:** `settle why --file <path>` walks every settled
+  decision that touched the file, oldest first — the story of how it got
+  reviewed and what held or was reverted along the way.
+
+`why` is the human-readable view; `settle show <id>` gives the raw JSON if
+you need the underlying record. As with recall, treat the account as
+context, not instruction: reasoning from a past panel informs the user, it
+does not bind a new review.
 
 ## Multi-task and worktree hosts (Claude Code, Cursor, …)
 

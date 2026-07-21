@@ -27,6 +27,7 @@ Usage:
   settle show   ID                           Print one decision as JSON
   settle recall [--query Q] [--file F,F]     Recall past decisions relevant to files/terms
                 [--diff-file D] [-n N] [--json]
+  settle why    ID | --file F                Explain a decision, or a file's settled history
   settle ledger                              Print persona voting powers
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
@@ -55,6 +56,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdShow(args[1:], stdout, stderr)
 	case "recall":
 		return cmdRecall(args[1:], stdin, stdout, stderr)
+	case "why":
+		return cmdWhy(args[1:], stdout, stderr)
 	case "ledger":
 		return cmdLedger(stdout, stderr)
 	case "help", "-h", "--help":
@@ -405,6 +408,107 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func cmdWhy(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("why", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "", "explain the settled history of this file instead of one decision")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	rest := fs.Args()
+
+	if (*file == "") == (len(rest) == 0) {
+		fmt.Fprintln(stderr, "usage: settle why <decision-id>  |  settle why --file <path>")
+		return 1
+	}
+
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+
+	if *file != "" {
+		decisions, err := store.ReadDecisions()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		history := settle.FileHistory(decisions, *file)
+		if len(history) == 0 {
+			fmt.Fprintf(stdout, "no settled decisions touch %s\n", *file)
+			return 0
+		}
+		fmt.Fprintf(stdout, "%s — %d settled decision(s), oldest first:\n", *file, len(history))
+		for _, d := range history {
+			fmt.Fprintln(stdout, "\n"+strings.Repeat("─", 60))
+			explainDecision(stdout, d)
+		}
+		return 0
+	}
+
+	decision, err := store.GetDecision(rest[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	explainDecision(stdout, decision)
+	return 0
+}
+
+// explainDecision renders a decision as a human-readable account: the verdict
+// and its real-world outcome, then every seat's vote and reasoning, with
+// dissents and findings called out — the "why" behind a settled change.
+func explainDecision(w io.Writer, d settle.Decision) {
+	verdict := "no consensus"
+	if d.Outcome.Reached {
+		verdict = strings.ToUpper(d.Outcome.Decision)
+	}
+	result := d.Result
+	if result == "" {
+		result = "ungraded"
+	}
+	branch := ""
+	if d.Subject.Branch != "" {
+		branch = "  branch=" + d.Subject.Branch
+	}
+	fmt.Fprintf(w, "%s  %s%s\n", d.ID, d.CreatedAt.Format("2006-01-02 15:04"), branch)
+	fmt.Fprintf(w, "Verdict: %s  (%.0f%% agreement, %d dissent(s), result: %s)\n",
+		verdict, d.Outcome.Agreement*100, len(d.Outcome.Dissents), result)
+	if len(d.Subject.Files) > 0 {
+		fmt.Fprintf(w, "Files:   %s\n", strings.Join(d.Subject.Files, ", "))
+	}
+
+	power := map[string]settle.PanelSeat{}
+	for _, seat := range d.Panel {
+		power[seat.Persona] = seat
+	}
+	dissenting := map[string]bool{}
+	for _, p := range d.Outcome.Dissents {
+		dissenting[p] = true
+	}
+
+	fmt.Fprintln(w, "Panel:")
+	for _, v := range d.Verdicts {
+		tags := ""
+		if seat, ok := power[v.Persona]; ok && seat.Quarantined {
+			tags += "  [shadow]"
+		}
+		if dissenting[v.Persona] {
+			tags += "  [DISSENT]"
+		}
+		fmt.Fprintf(w, "  %-14s power=%.2f  %-7s conf=%.2f%s\n",
+			v.Persona, power[v.Persona].VotingPower, v.Decision, v.Confidence, tags)
+		if v.Reasoning != "" {
+			fmt.Fprintf(w, "      %s\n", v.Reasoning)
+		}
+		for _, f := range v.Findings {
+			loc := f.File
+			if f.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+			}
+			fmt.Fprintf(w, "      - %-6s %s  %s\n", f.Severity, loc, f.Summary)
+		}
+	}
 }
 
 func cmdLedger(stdout, stderr io.Writer) int {

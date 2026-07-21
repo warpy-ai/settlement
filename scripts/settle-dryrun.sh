@@ -83,4 +83,11 @@ print("recall OK:", hits[0]["id"])
 PY
 "$SETTLE" recall --query "kubernetes helm chart" | grep -q "no relevant precedent"
 
+# why should explain the decision — verdict, the dissenting seat, and the
+# reverted outcome — and reconstruct the file's history.
+WHY="$("$SETTLE" why "$DECISION_ID")"
+echo "$WHY" | grep -q "result: reverted"
+echo "$WHY" | grep -q "\[DISSENT\]"
+"$SETTLE" why --file api/handler.go | grep -q "$DECISION_ID"
+
 echo "settle dry run: PASS"

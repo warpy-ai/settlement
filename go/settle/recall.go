@@ -29,6 +29,29 @@ func DiffFiles(diff []byte) []string {
 	return describeDiff(diff).Files
 }
 
+// FileHistory returns, in recorded order (oldest first), every decision that
+// reviewed the given file — by exact path or shared basename. It is the data
+// behind `settle why --file`: the settled history that explains why a file
+// looks the way it does.
+func FileHistory(decisions []Decision, file string) []Decision {
+	target := normalizePath(file)
+	if target == "" {
+		return nil
+	}
+	base := path.Base(target)
+	var out []Decision
+	for _, d := range decisions {
+		for _, f := range d.Subject.Files {
+			nf := normalizePath(f)
+			if nf == target || path.Base(nf) == base {
+				out = append(out, d)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // RecallHit is one relevant past decision, with why it matched.
 type RecallHit struct {
 	Decision     Decision `json:"-"`

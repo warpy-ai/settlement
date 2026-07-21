@@ -125,6 +125,31 @@ func TestRecallStopwordsIgnored(t *testing.T) {
 	}
 }
 
+func TestFileHistoryChronologicalAndScoped(t *testing.T) {
+	decisions := []Decision{
+		decisionAt("d1", 3, []string{"api/handler.go"}, []Verdict{verdict("tests", "approve", 0.9)}, nil),
+		decisionAt("d2", 1, []string{"core/queue.go"}, []Verdict{verdict("tests", "approve", 0.9)}, nil),
+		decisionAt("d3", 5, []string{"web/handler.go"}, []Verdict{verdict("tests", "approve", 0.9)}, nil), // shared basename
+	}
+
+	hist := FileHistory(decisions, "api/handler.go")
+	got := make([]string, len(hist))
+	for i, d := range hist {
+		got[i] = d.ID
+	}
+	// d2 (core/queue.go) is unrelated; d1 exact + d3 basename match, in
+	// recorded order (oldest first, as ReadDecisions returns them).
+	if len(got) != 2 || got[0] != "d1" || got[1] != "d3" {
+		t.Fatalf("expected [d1 d3] in recorded order, got %v", got)
+	}
+}
+
+func TestFileHistoryEmptyFile(t *testing.T) {
+	if h := FileHistory([]Decision{decisionAt("d1", 1, []string{"a.go"}, nil, nil)}, ""); h != nil {
+		t.Fatalf("empty file should return nil, got %v", h)
+	}
+}
+
 func TestDiffFiles(t *testing.T) {
 	files := DiffFiles([]byte(sampleDiff))
 	if len(files) != 1 || files[0] != "api/handler.go" {
