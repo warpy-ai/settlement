@@ -110,35 +110,49 @@ The skill layer is a thin client; the Go service (extended with graph store, mem
 - ✅ Reuses the entire existing Go investment
 - ❌ Heavier: something must run 24/7 (though a serverless/hibernating deploy à la Hermes' Modal/Daytona backends mitigates cost)
 
-### ★ Recommendation: B + C — "one skill to the user, layered underneath"
+### ★ Recommendation (revised): local-first skill + paid cloud tier
 
-Ship **one plugin** (Option B) as the only thing users install, backed by **one daemon** (Option C) as the only place state lives:
+> Revision note: an earlier draft recommended a self-hosted daemon as the required backend. Feedback: nobody wants to run (or talk to) a Go service to use a skill. The daemon is demoted from *requirement* to *product* — the skill is fully functional locally; the cloud is the paid upgrade.
+
+**Local skill (free, open-source, the default experience).** Everything runs inside the user's assistant and repo — no daemon, no server, no account:
 
 ```
  user installs ONE thing: the settlement plugin
- ┌──────────────────────────────────────────────┐
- │  /settle (router SKILL.md — thin)            │
- │   ├─ settle:review   settle:plan   settle:why│
- │   ├─ settle:memory (recall / consolidate)    │
- │   └─ auto-generated subsystem skills         │
- │  MCP client config → settlement daemon       │
- └──────────────┬───────────────────────────────┘
-                │ MCP (graph_query, propose, settle,
-                │      memory_recall, ledger, provenance)
- ┌──────────────▼───────────────────────────────┐
- │  Settlement daemon (existing Go service +)   │
- │  KG + memory tiers (Postgres/pgvector)       │
- │  panel runtime (supervisor/consensus)        │
- │  punitive ledger (agents/skills/loops)       │
- │  schedulers (consolidation, decay, drift)    │
- └──────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────┐
+ │  /settle (router SKILL.md — thin)                │
+ │   ├─ settle:review  settle:plan  settle:why      │
+ │   ├─ settle:memory (recall / consolidate)        │
+ │   └─ auto-generated subsystem skills             │
+ │  bundled `settle` CLI (the Go code, repackaged   │
+ │  as a per-command static binary — NOT a daemon)  │
+ └──────────────┬───────────────────────────────────┘
+                │ reads/writes
+ ┌──────────────▼───────────────────────────────────┐
+ │  .settlement/ in the repo (git = persistence)    │
+ │   graph.json  decisions.jsonl  ledger.json       │
+ │   memory/*.md  skills/*/SKILL.md                 │
+ └──────────────────────────────────────────────────┘
 ```
 
-**Degraded standalone mode** keeps Option A's virtue: with no daemon reachable, the skill falls back to `/settle review` using the host assistant's own model as a 1-voter panel and repo-local files for episodic notes — useful day one, and an on-ramp that advertises what the daemon adds.
+- **Panels without a backend:** the host assistant spawns N persona subagents (security / correctness / API-contract reviewers); the `settle` CLI does the deterministic parts — graph build/query, weighted-vote tallying, ledger math, provenance records. LLM calls happen through the host agent or the user's own API keys. Provider diversity shrinks to persona diversity — acceptable at the free tier.
+- **Git is the database:** graph, decisions, memory, and ledger live in `.settlement/`, committed with the code. Provenance travels with the repo, decisions are PR-reviewable, and sync is `git pull`. Punitive updates are recomputable from git history itself (reverts are visible), which makes the local ledger *verifiable* even though it isn't tamper-proof — an honest limitation acceptable for a single-user tool.
+- The existing Go investment survives intact: supervisor/consensus compiles into the CLI; the same code later powers the cloud.
+
+**Settlement Cloud (paid tier).** The things a local skill genuinely cannot do — which is exactly what makes them chargeable:
+
+| Cloud feature | Why local can't do it |
+|---|---|
+| **True multi-provider panels** (5 SDKs, provider-diverse voting — the original engine) | Local is limited to the host assistant's model + user's keys |
+| **Org-wide reputation ledger** (tamper-proof, cross-repo agent/skill scores) | Repo-local scores are per-repo and editable |
+| **Team precedent** (shared decision graph across an org's repos: "repo B already settled this pattern") | Git-local memory stops at the repo boundary |
+| **Always-on autonomous loops** (drift/decay/coverage running 24/7, settled PRs waiting in the morning) | Nothing local runs while the laptop is closed |
+| **Hosted graph for large monorepos** + org policy packs, dashboards, audit exports | Scale and compliance |
+
+The seam between tiers is one config line: the CLI targets `.settlement/` by default, or `SETTLEMENT_CLOUD_TOKEN` when present — same commands, same skill, bigger panel and bigger memory. Free local usage generates the decision volume that makes the org ledger and team precedent valuable, which is the upgrade trigger; this is the graphify/Hermes-adjacent open-core playbook.
 
 ### Sequencing the skill surface
 
-1. `settle:review` against the existing engine (no graph needed) — ships in weeks
+1. `settle:review` fully local (persona subagents + CLI tally, `.settlement/` records) — ships in weeks
 2. `settle:why` + `settle:memory recall` once Phase A (graph substrate) lands
 3. Ledger + settled consolidation (§2–3) — turns on the punitive machinery
 4. Auto-generated subsystem skills + skill adequacy scores — the self-improving-but-adjudicated procedural tier
