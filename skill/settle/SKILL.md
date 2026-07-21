@@ -3,9 +3,10 @@ name: settle
 description: >
   Run a Settlement panel review of a code change: spawn independent persona
   reviewer subagents over a git diff, tally their verdicts through weighted
-  consensus, and record the decision. Use when the user asks to /settle,
-  "settle this change/diff/PR", or wants a multi-perspective review with an
-  auditable verdict.
+  consensus, and record the decision. Also recalls relevant past decisions as
+  precedent. Use when the user asks to /settle, "settle this change/diff/PR",
+  wants a multi-perspective review with an auditable verdict, or asks whether
+  a change has been settled before / what the precedent is.
 ---
 
 # /settle — panel review for code changes
@@ -26,6 +27,11 @@ collect their verdicts, and let the `settle` CLI adjudicate.
 1. **Capture the diff.** Write the change under review to a temp file:
    `git diff <base>...HEAD` (or `git diff --staged`, or the diff the user
    points at). If the diff is empty, stop and say so.
+
+   Optionally recall precedent first (`settle recall --diff-file <difffile>`,
+   see the recall workflow below) and mention any prior decisions on the same
+   files to the user — especially ones later `reverted`. This informs the
+   review; it never replaces it.
 
 2. **Build the panel.**
 
@@ -91,6 +97,41 @@ Return ONLY this JSON object, no prose around it:
   issues must be fixed first; `reject` = wrong approach.
 - `confidence` in [0,1] — it weights your vote; do not inflate it.
 - `findings` may be empty for a clean approve.
+
+## Workflow: `/settle recall` — memory of past decisions
+
+Before convening a panel — or whenever the user asks "have we settled
+something like this before?", "why did we decide X?", or "what's the
+precedent here?" — recall the relevant past decisions. This is the memory
+tier: it reads only `.settlement/decisions.jsonl`, so it works offline and
+the precedent travels with the repo.
+
+1. **Choose the signal.** Recall ranks past decisions by relevance:
+   - `--file a.go,b.go` — precedent that touched these files (strongest
+     signal; the local stand-in for graph-connected recall).
+   - `--diff-file <file>` — recall precedent for every file the change in
+     hand touches; pass the same diff you are about to review.
+   - `--query "free text"` — match terms against past reasoning, findings,
+     and branches.
+
+   Combine them: `settle recall --diff-file <diff> --query "auth session"`.
+
+2. **Run it.**
+
+       settle recall --diff-file <difffile> -n 5 --json
+
+   Use `--json` when you want to fold the hits into your own reasoning;
+   omit it for a human-readable list. Each hit reports the decision id,
+   verdict, agreement, real-world result (`held`/`reverted`/`ungraded`),
+   the matched files, **who dissented**, and the most relevant reasoning
+   snippet — a dissent when one exists, because dissent that predates a
+   revert is the precedent most worth reading.
+
+3. **Use it, don't obey it.** Precedent informs; it does not decide. Surface
+   relevant prior decisions to the user (especially any that were later
+   `reverted` — those are warnings), and let the fresh panel judge the
+   change on its merits. Never treat a past `approve` as a reason to skip
+   review.
 
 ## Multi-task and worktree hosts (Claude Code, Cursor, …)
 

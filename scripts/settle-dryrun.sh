@@ -68,4 +68,19 @@ print("ledger OK:", {p: round(e["voting_power"], 2) for p, e in sorted(l.items()
 PY
 
 "$SETTLE" log | grep -q "result=reverted"
+
+# Recall should surface the reverted precedent when the same file changes
+# again, and stay silent for an unrelated query.
+"$SETTLE" recall --file api/handler.go --json > recall.json
+python3 - <<'PY'
+import json
+hits = json.load(open("recall.json"))
+assert len(hits) == 1, hits
+assert hits[0]["result"] == "reverted", hits[0]
+assert "api/handler.go" in hits[0]["matched_files"], hits[0]
+assert hits[0]["dissents"] == ["api-contract"], hits[0]
+print("recall OK:", hits[0]["id"])
+PY
+"$SETTLE" recall --query "kubernetes helm chart" | grep -q "no relevant precedent"
+
 echo "settle dry run: PASS"

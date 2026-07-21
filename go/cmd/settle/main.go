@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"settlement-core/settle"
 )
@@ -24,6 +25,8 @@ Usage:
   settle outcome --decision ID --result R    Record ground truth (held|reverted) and update the ledger
   settle log    [-n N]                       List recorded decisions (newest first)
   settle show   ID                           Print one decision as JSON
+  settle recall [--query Q] [--file F,F]     Recall past decisions relevant to files/terms
+                [--diff-file D] [-n N] [--json]
   settle ledger                              Print persona voting powers
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
@@ -50,6 +53,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdLog(args[1:], stdout, stderr)
 	case "show":
 		return cmdShow(args[1:], stdout, stderr)
+	case "recall":
+		return cmdRecall(args[1:], stdin, stdout, stderr)
 	case "ledger":
 		return cmdLedger(stdout, stderr)
 	case "help", "-h", "--help":
@@ -325,6 +330,81 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	return printJSON(stdout, stderr, decision)
+}
+
+func cmdRecall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recall", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	query := fs.String("query", "", "free-text terms to match against past decisions")
+	files := fs.String("file", "", "comma-separated file paths to recall precedent for")
+	diffFile := fs.String("diff-file", "", "recall precedent for the files changed in this diff (\"-\" for stdin)")
+	limit := fs.Int("n", 5, "maximum decisions to return")
+	asJSON := fs.Bool("json", false, "emit hits as JSON (for the /settle skill)")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	q := settle.RecallQuery{Terms: []string{*query}}
+	if *files != "" {
+		q.Files = append(q.Files, splitCSV(*files)...)
+	}
+	if *diffFile != "" {
+		diff, err := readInput(strings.TrimPrefix(*diffFile, "-"), stdin)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		q.Files = append(q.Files, settle.DiffFiles(diff)...)
+	}
+	if len(q.Files) == 0 && *query == "" {
+		fmt.Fprintln(stderr, "settle recall: give at least one of --query, --file, or --diff-file")
+		return 1
+	}
+
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	decisions, err := store.ReadDecisions()
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	hits := settle.Recall(decisions, q, *limit)
+	if *asJSON {
+		return printJSON(stdout, stderr, hits)
+	}
+	if len(hits) == 0 {
+		fmt.Fprintln(stdout, "no relevant precedent found")
+		return 0
+	}
+	for _, h := range hits {
+		result := h.Result
+		if result == "" {
+			result = "ungraded"
+		}
+		fmt.Fprintf(stdout, "%s  %s  %-12s  agreement=%.0f%%  result=%s\n",
+			h.ID, h.CreatedAt, h.Verdict, h.Agreement*100, result)
+		if len(h.MatchedFiles) > 0 {
+			fmt.Fprintf(stdout, "    files:   %s\n", strings.Join(h.MatchedFiles, ", "))
+		}
+		if len(h.Dissents) > 0 {
+			fmt.Fprintf(stdout, "    dissent: %s\n", strings.Join(h.Dissents, ", "))
+		}
+		if h.Reasoning != "" {
+			fmt.Fprintf(stdout, "    why:     %s\n", h.Reasoning)
+		}
+	}
+	return 0
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func cmdLedger(stdout, stderr io.Writer) int {
