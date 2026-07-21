@@ -24,19 +24,7 @@ func BuildPanel(cfg Config, ledger Ledger, diff []byte) PanelSpec {
 
 	seats := make([]PanelSeat, 0, seatCount)
 	for _, persona := range cfg.Panel.Personas[:seatCount] {
-		seat := PanelSeat{
-			Persona:     persona,
-			VotingPower: 1.0,
-			PromptFile:  "skill/settle/personas/" + persona + ".md",
-		}
-		if entry, ok := ledger.Personas[persona]; ok {
-			seat.VotingPower = entry.VotingPower
-			seat.Quarantined = entry.Quarantined
-		}
-		if seat.Quarantined {
-			seat.VotingPower = 0 // shadow vote: reviewed and scored, never decisive
-		}
-		seats = append(seats, seat)
+		seats = append(seats, seatFor(persona, ledger))
 	}
 
 	return PanelSpec{
@@ -45,6 +33,24 @@ func BuildPanel(cfg Config, ledger Ledger, diff []byte) PanelSpec {
 		Consensus: cfg.Consensus,
 		Seats:     seats,
 	}
+}
+
+// seatFor builds a panel seat for a persona, applying its ledger voting power
+// and demoting a quarantined persona to a weight-0 shadow vote.
+func seatFor(persona string, ledger Ledger) PanelSeat {
+	seat := PanelSeat{
+		Persona:     persona,
+		VotingPower: 1.0,
+		PromptFile:  "skill/settle/personas/" + persona + ".md",
+	}
+	if entry, ok := ledger.Personas[persona]; ok {
+		seat.VotingPower = entry.VotingPower
+		seat.Quarantined = entry.Quarantined
+	}
+	if seat.Quarantined {
+		seat.VotingPower = 0 // shadow vote: reviewed and scored, never decisive
+	}
+	return seat
 }
 
 // describeDiff extracts changed files, changed-line count, and a content hash

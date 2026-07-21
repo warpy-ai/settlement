@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"settlement-core/settle"
 )
@@ -24,7 +25,13 @@ Usage:
   settle outcome --decision ID --result R    Record ground truth (held|reverted) and update the ledger
   settle log    [-n N]                       List recorded decisions (newest first)
   settle show   ID                           Print one decision as JSON
+  settle recall [--query Q] [--file F,F]     Recall past decisions relevant to files/terms
+                [--diff-file D] [-n N] [--json]
+  settle why    ID | --file F                Explain a decision, or a file's settled history
+  settle memory <candidates|propose|list|show>  Consolidate decisions into settled memory
   settle ledger                              Print persona voting powers
+  settle skills                              Print memory-note adequacy scores
+  settle loops                               Print autonomous-loop trust levels
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
 
@@ -50,8 +57,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdLog(args[1:], stdout, stderr)
 	case "show":
 		return cmdShow(args[1:], stdout, stderr)
+	case "recall":
+		return cmdRecall(args[1:], stdin, stdout, stderr)
+	case "why":
+		return cmdWhy(args[1:], stdout, stderr)
+	case "memory":
+		return cmdMemory(args[1:], stdin, stdout, stderr)
 	case "ledger":
 		return cmdLedger(stdout, stderr)
+	case "skills":
+		return cmdSkills(stdout, stderr)
+	case "loops":
+		return cmdLoops(stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprintln(stdout, usage)
 		return 0
@@ -88,7 +105,7 @@ func cmdInit(stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "initialized %s\n", store.Root)
-	fmt.Fprintln(stdout, "commit config.json, ledger.json, and decisions.jsonl; verdicts/ stays untracked scratch")
+	fmt.Fprintln(stdout, "commit config.json, ledger.json, skills.json, loops.json, decisions.jsonl, and memory/; verdicts/ stays untracked scratch")
 	return 0
 }
 
@@ -120,7 +137,25 @@ func cmdPanel(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	panel := settle.BuildPanel(cfg, ledger, diff)
 	stampBranch(&panel)
+	stampGuidance(store, &panel)
 	return printJSON(stdout, stderr, panel)
+}
+
+// stampGuidance attaches the settled memory notes whose scope covers the files
+// under review, so the reviewers get the relevant learned procedures and the
+// decision records which guidance it was made under (the used_skill edges).
+// Quarantined (below-adequacy) notes are excluded from auto-injection.
+func stampGuidance(store *settle.Store, panel *settle.PanelSpec) {
+	notes, err := store.ReadMemoryNotes()
+	if err != nil || len(notes) == 0 {
+		return
+	}
+	applicable := settle.ApplicableNotes(notes, panel.Subject.Files, store.QuarantinedSkills())
+	ids := make([]string, 0, len(applicable))
+	for _, n := range applicable {
+		ids = append(ids, n.ID)
+	}
+	panel.Subject.GuidedBy = ids
 }
 
 // stampBranch records the current branch on the panel subject so decisions
@@ -139,6 +174,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	taskID := fs.String("task", "", "task id: verdicts are read from .settlement/verdicts/<id>/")
 	panelFile := fs.String("panel", "", "panel spec JSON file (default: rebuild from --diff-file)")
 	diffFile := fs.String("diff-file", "", "unified diff file, used when --panel is not given")
+	loop := fs.String("loop", "", "name of the autonomous loop that proposed this change (moves its trust when graded)")
 	noRecord := fs.Bool("no-record", false, "tally without appending to decisions.jsonl or touching the ledger")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -177,6 +213,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		panel = settle.BuildPanel(cfg, ledger, diff)
 		stampBranch(&panel)
+		stampGuidance(store, &panel)
 	}
 
 	verdicts, err := settle.LoadVerdicts(store.VerdictsDir(*taskID))
@@ -187,6 +224,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	decision.Origin = *loop
 
 	if !*noRecord {
 		if err := store.AppendDecision(decision); err != nil {
@@ -265,6 +303,51 @@ func cmdOutcome(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
+	// Propagate the same ground truth to the adequacy of any memory notes that
+	// guided this decision (docs §3.2). Notes crossing below threshold are
+	// quarantined and stop being auto-injected.
+	if len(decision.Subject.GuidedBy) > 0 {
+		sl, err := store.LoadSkillLedger()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if err := settle.ApplyAdequacy(&sl, decision, *result, settle.DefaultAdequacyParams()); err != nil {
+			return fail(stderr, err)
+		}
+		if err := store.SaveSkillLedger(sl); err != nil {
+			return fail(stderr, err)
+		}
+		for _, id := range decision.Subject.GuidedBy {
+			if e := sl.Skills[id]; e != nil {
+				status := ""
+				if e.Quarantined {
+					status = "  [QUARANTINED: excluded from auto-injection]"
+				}
+				fmt.Fprintf(stdout, "guidance %s adequacy=%.2f (held=%d reverted=%d)%s\n",
+					id, e.Adequacy, e.Held, e.Reverted, status)
+			}
+		}
+	}
+
+	// A change proposed by an autonomous loop moves that loop's trust: held
+	// extends its clean streak toward promotion, reverted demotes it a rung.
+	if decision.Origin != "" {
+		ll, err := store.LoadLoopLedger()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if err := settle.ApplyLoopOutcome(&ll, decision.Origin, *result, settle.DefaultLoopParams()); err != nil {
+			return fail(stderr, err)
+		}
+		if err := store.SaveLoopLedger(ll); err != nil {
+			return fail(stderr, err)
+		}
+		if e := ll.Loops[decision.Origin]; e != nil {
+			fmt.Fprintf(stdout, "loop %s trust=%s (held=%d reverted=%d streak=%d)\n",
+				decision.Origin, e.Trust, e.Held, e.Reverted, e.CleanStreak)
+		}
+	}
+
 	fmt.Fprintf(stdout, "recorded %s as %s; ledger updated:\n", decision.ID, *result)
 	return cmdLedger(stdout, stderr)
 }
@@ -327,6 +410,182 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 	return printJSON(stdout, stderr, decision)
 }
 
+func cmdRecall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recall", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	query := fs.String("query", "", "free-text terms to match against past decisions")
+	files := fs.String("file", "", "comma-separated file paths to recall precedent for")
+	diffFile := fs.String("diff-file", "", "recall precedent for the files changed in this diff (\"-\" for stdin)")
+	limit := fs.Int("n", 5, "maximum decisions to return")
+	asJSON := fs.Bool("json", false, "emit hits as JSON (for the /settle skill)")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	q := settle.RecallQuery{Terms: []string{*query}}
+	if *files != "" {
+		q.Files = append(q.Files, splitCSV(*files)...)
+	}
+	if *diffFile != "" {
+		diff, err := readInput(strings.TrimPrefix(*diffFile, "-"), stdin)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		q.Files = append(q.Files, settle.DiffFiles(diff)...)
+	}
+	if len(q.Files) == 0 && *query == "" {
+		fmt.Fprintln(stderr, "settle recall: give at least one of --query, --file, or --diff-file")
+		return 1
+	}
+
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	decisions, err := store.ReadDecisions()
+	if err != nil {
+		return fail(stderr, err)
+	}
+
+	hits := settle.Recall(decisions, q, *limit)
+	if *asJSON {
+		return printJSON(stdout, stderr, hits)
+	}
+	if len(hits) == 0 {
+		fmt.Fprintln(stdout, "no relevant precedent found")
+		return 0
+	}
+	for _, h := range hits {
+		result := h.Result
+		if result == "" {
+			result = "ungraded"
+		}
+		fmt.Fprintf(stdout, "%s  %s  %-12s  agreement=%.0f%%  result=%s\n",
+			h.ID, h.CreatedAt, h.Verdict, h.Agreement*100, result)
+		if len(h.MatchedFiles) > 0 {
+			fmt.Fprintf(stdout, "    files:   %s\n", strings.Join(h.MatchedFiles, ", "))
+		}
+		if len(h.Dissents) > 0 {
+			fmt.Fprintf(stdout, "    dissent: %s\n", strings.Join(h.Dissents, ", "))
+		}
+		if h.Reasoning != "" {
+			fmt.Fprintf(stdout, "    why:     %s\n", h.Reasoning)
+		}
+	}
+	return 0
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func cmdWhy(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("why", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "", "explain the settled history of this file instead of one decision")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	rest := fs.Args()
+
+	if (*file == "") == (len(rest) == 0) {
+		fmt.Fprintln(stderr, "usage: settle why <decision-id>  |  settle why --file <path>")
+		return 1
+	}
+
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+
+	if *file != "" {
+		decisions, err := store.ReadDecisions()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		history := settle.FileHistory(decisions, *file)
+		if len(history) == 0 {
+			fmt.Fprintf(stdout, "no settled decisions touch %s\n", *file)
+			return 0
+		}
+		fmt.Fprintf(stdout, "%s — %d settled decision(s), oldest first:\n", *file, len(history))
+		for _, d := range history {
+			fmt.Fprintln(stdout, "\n"+strings.Repeat("─", 60))
+			explainDecision(stdout, d)
+		}
+		return 0
+	}
+
+	decision, err := store.GetDecision(rest[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	explainDecision(stdout, decision)
+	return 0
+}
+
+// explainDecision renders a decision as a human-readable account: the verdict
+// and its real-world outcome, then every seat's vote and reasoning, with
+// dissents and findings called out — the "why" behind a settled change.
+func explainDecision(w io.Writer, d settle.Decision) {
+	verdict := "no consensus"
+	if d.Outcome.Reached {
+		verdict = strings.ToUpper(d.Outcome.Decision)
+	}
+	result := d.Result
+	if result == "" {
+		result = "ungraded"
+	}
+	branch := ""
+	if d.Subject.Branch != "" {
+		branch = "  branch=" + d.Subject.Branch
+	}
+	fmt.Fprintf(w, "%s  %s%s\n", d.ID, d.CreatedAt.Format("2006-01-02 15:04"), branch)
+	fmt.Fprintf(w, "Verdict: %s  (%.0f%% agreement, %d dissent(s), result: %s)\n",
+		verdict, d.Outcome.Agreement*100, len(d.Outcome.Dissents), result)
+	if len(d.Subject.Files) > 0 {
+		fmt.Fprintf(w, "Files:   %s\n", strings.Join(d.Subject.Files, ", "))
+	}
+
+	power := map[string]settle.PanelSeat{}
+	for _, seat := range d.Panel {
+		power[seat.Persona] = seat
+	}
+	dissenting := map[string]bool{}
+	for _, p := range d.Outcome.Dissents {
+		dissenting[p] = true
+	}
+
+	fmt.Fprintln(w, "Panel:")
+	for _, v := range d.Verdicts {
+		tags := ""
+		if seat, ok := power[v.Persona]; ok && seat.Quarantined {
+			tags += "  [shadow]"
+		}
+		if dissenting[v.Persona] {
+			tags += "  [DISSENT]"
+		}
+		fmt.Fprintf(w, "  %-14s power=%.2f  %-7s conf=%.2f%s\n",
+			v.Persona, power[v.Persona].VotingPower, v.Decision, v.Confidence, tags)
+		if v.Reasoning != "" {
+			fmt.Fprintf(w, "      %s\n", v.Reasoning)
+		}
+		for _, f := range v.Findings {
+			loc := f.File
+			if f.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+			}
+			fmt.Fprintf(w, "      - %-6s %s  %s\n", f.Severity, loc, f.Summary)
+		}
+	}
+}
+
 func cmdLedger(stdout, stderr io.Writer) int {
 	store, code := openStore(stderr)
 	if code != 0 {
@@ -349,6 +608,62 @@ func cmdLedger(stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%-14s power=%.2f reviews=%d aligned=%d misjudged=%d%s\n",
 			persona, e.VotingPower, e.Reviews, e.Aligned, e.Misjudged, status)
+	}
+	return 0
+}
+
+func cmdSkills(stdout, stderr io.Writer) int {
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	sl, err := store.LoadSkillLedger()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(sl.Skills) == 0 {
+		fmt.Fprintln(stdout, "no scored guidance yet (grade decisions that were made under memory guidance)")
+		return 0
+	}
+	ids := make([]string, 0, len(sl.Skills))
+	for id := range sl.Skills {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		e := sl.Skills[id]
+		status := ""
+		if e.Quarantined {
+			status = "  [QUARANTINED: excluded from auto-injection]"
+		}
+		fmt.Fprintf(stdout, "%s  adequacy=%.2f  uses=%d held=%d reverted=%d%s\n",
+			id, e.Adequacy, e.Uses, e.Held, e.Reverted, status)
+	}
+	return 0
+}
+
+func cmdLoops(stdout, stderr io.Writer) int {
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	ll, err := store.LoadLoopLedger()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(ll.Loops) == 0 {
+		fmt.Fprintln(stdout, "no loops tracked yet (tally with --loop <name>, then grade the outcome)")
+		return 0
+	}
+	names := make([]string, 0, len(ll.Loops))
+	for name := range ll.Loops {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		e := ll.Loops[name]
+		fmt.Fprintf(stdout, "%-16s trust=%-18s merges=%d held=%d reverted=%d streak=%d\n",
+			name, e.Trust, e.Merges, e.Held, e.Reverted, e.CleanStreak)
 	}
 	return 0
 }

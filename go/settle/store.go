@@ -62,6 +62,14 @@ func Init(dir string) (*Store, error) {
 	if err := os.WriteFile(s.decisionsPath(), nil, 0o644); err != nil {
 		return nil, err
 	}
+
+	if err := writeJSON(s.skillsPath(), SkillLedger{Schema: SchemaSkills, Skills: map[string]*SkillEntry{}}); err != nil {
+		return nil, err
+	}
+
+	if err := writeJSON(s.loopsPath(), LoopLedger{Schema: SchemaLoops, Loops: map[string]*LoopEntry{}}); err != nil {
+		return nil, err
+	}
 	// verdicts/ holds per-review scratch; keep it out of git.
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("verdicts/\n"), 0o644); err != nil {
 		return nil, err
@@ -77,6 +85,8 @@ func Init(dir string) (*Store, error) {
 func (s *Store) configPath() string    { return filepath.Join(s.Root, "config.json") }
 func (s *Store) ledgerPath() string    { return filepath.Join(s.Root, "ledger.json") }
 func (s *Store) decisionsPath() string { return filepath.Join(s.Root, "decisions.jsonl") }
+func (s *Store) skillsPath() string    { return filepath.Join(s.Root, "skills.json") }
+func (s *Store) loopsPath() string     { return filepath.Join(s.Root, "loops.json") }
 
 // VerdictsDir returns the scratch directory for a task's verdict files.
 func (s *Store) VerdictsDir(taskID string) string {
@@ -100,6 +110,59 @@ func (s *Store) LoadLedger() (Ledger, error) {
 
 func (s *Store) SaveLedger(l Ledger) error {
 	return writeJSON(s.ledgerPath(), l)
+}
+
+// LoadSkillLedger reads the adequacy ledger, tolerating stores created before
+// skills.json existed (returns an empty ledger).
+func (s *Store) LoadSkillLedger() (SkillLedger, error) {
+	var sl SkillLedger
+	err := readJSON(s.skillsPath(), &sl)
+	if os.IsNotExist(err) {
+		return SkillLedger{Schema: SchemaSkills, Skills: map[string]*SkillEntry{}}, nil
+	}
+	if err == nil && sl.Skills == nil {
+		sl.Skills = map[string]*SkillEntry{}
+	}
+	return sl, err
+}
+
+func (s *Store) SaveSkillLedger(sl SkillLedger) error {
+	return writeJSON(s.skillsPath(), sl)
+}
+
+// LoadLoopLedger reads the loop trust ledger, tolerating stores created before
+// loops.json existed (returns an empty ledger).
+func (s *Store) LoadLoopLedger() (LoopLedger, error) {
+	var ll LoopLedger
+	err := readJSON(s.loopsPath(), &ll)
+	if os.IsNotExist(err) {
+		return LoopLedger{Schema: SchemaLoops, Loops: map[string]*LoopEntry{}}, nil
+	}
+	if err == nil && ll.Loops == nil {
+		ll.Loops = map[string]*LoopEntry{}
+	}
+	return ll, err
+}
+
+func (s *Store) SaveLoopLedger(ll LoopLedger) error {
+	return writeJSON(s.loopsPath(), ll)
+}
+
+// QuarantinedSkills returns the set of note ids currently below adequacy, to be
+// excluded from auto-injected guidance. It never errors: a missing or unreadable
+// ledger means nothing is quarantined.
+func (s *Store) QuarantinedSkills() map[string]bool {
+	sl, err := s.LoadSkillLedger()
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for id, e := range sl.Skills {
+		if e.Quarantined {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // AppendDecision appends a decision line to decisions.jsonl.

@@ -2,11 +2,14 @@ package settle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,23 +19,44 @@ import (
 // RunTally adjudicates a panel's verdicts through the shared consensus engine
 // and produces the decision record. Fully offline (nil Synthesizer).
 func RunTally(panel PanelSpec, verdicts []Verdict, cfg Config) (Decision, error) {
+	question := "code review: " + strings.Join(panel.Subject.Files, ", ")
+	outcome, err := Adjudicate(panel.Seats, verdicts, panel.Consensus, question)
+	if err != nil {
+		return Decision{}, err
+	}
+	now := time.Now().UTC()
+	return Decision{
+		Schema:    SchemaDecision,
+		ID:        newDecisionID(panel.Subject.DiffSHA256, now),
+		CreatedAt: now,
+		Subject:   panel.Subject,
+		Panel:     panel.Seats,
+		Verdicts:  verdicts,
+		Outcome:   outcome,
+	}, nil
+}
+
+// Adjudicate runs a set of weighted verdicts through the consensus engine and
+// returns the outcome. Shared by code-change tallies (RunTally) and memory
+// consolidation settlement (SettleMemory).
+func Adjudicate(seats []PanelSeat, verdicts []Verdict, params ConsensusParams, question string) (Outcome, error) {
 	if len(verdicts) == 0 {
-		return Decision{}, fmt.Errorf("no verdicts to tally")
+		return Outcome{}, fmt.Errorf("no verdicts to tally")
 	}
 
-	seatWeight := make(map[string]PanelSeat, len(panel.Seats))
-	for _, seat := range panel.Seats {
+	seatWeight := make(map[string]PanelSeat, len(seats))
+	for _, seat := range seats {
 		seatWeight[seat.Persona] = seat
 	}
 
 	results := make([]consensus.Result, 0, len(verdicts))
 	for _, v := range verdicts {
 		if err := v.Validate(); err != nil {
-			return Decision{}, err
+			return Outcome{}, err
 		}
 		seat, ok := seatWeight[v.Persona]
 		if !ok {
-			return Decision{}, fmt.Errorf("verdict from persona %q which has no seat on the panel", v.Persona)
+			return Outcome{}, fmt.Errorf("verdict from persona %q which has no seat on the panel", v.Persona)
 		}
 		results = append(results, consensus.Result{
 			WorkerID:    v.Persona,
@@ -47,19 +71,17 @@ func RunTally(panel PanelSpec, verdicts []Verdict, cfg Config) (Decision, error)
 		})
 	}
 
-	question := "code review: " + strings.Join(panel.Subject.Files, ", ")
 	ccfg := consensus.Config{
-		MinimumAgreement: panel.Consensus.MinimumAgreement,
-		MatchStrategy:    consensus.Strategy(panel.Consensus.Strategy),
+		MinimumAgreement: params.MinimumAgreement,
+		MatchStrategy:    consensus.Strategy(params.Strategy),
 	}
-
 	reached, raw := consensus.Tally(context.Background(), question, results, ccfg, nil)
 
 	outcome := Outcome{Reached: reached, ResponseJSON: raw}
 	if reached {
 		var resp consensus.Response
 		if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-			return Decision{}, fmt.Errorf("consensus engine returned invalid JSON: %w", err)
+			return Outcome{}, fmt.Errorf("consensus engine returned invalid JSON: %w", err)
 		}
 		outcome.Decision = resp.Decision
 		if agreement, ok := resp.Metadata["actual_agreement"].(float64); ok {
@@ -72,16 +94,7 @@ func RunTally(panel PanelSpec, verdicts []Verdict, cfg Config) (Decision, error)
 		}
 		sort.Strings(outcome.Dissents)
 	}
-
-	return Decision{
-		Schema:    SchemaDecision,
-		ID:        newDecisionID(panel.Subject.DiffSHA256),
-		CreatedAt: time.Now().UTC(),
-		Subject:   panel.Subject,
-		Panel:     panel.Seats,
-		Verdicts:  verdicts,
-		Outcome:   outcome,
-	}, nil
+	return outcome, nil
 }
 
 // LoadVerdicts reads every *.json verdict in dir.
@@ -105,13 +118,12 @@ func LoadVerdicts(dir string) ([]Verdict, error) {
 	return verdicts, nil
 }
 
-func newDecisionID(diffHash string) string {
-	suffix := diffHash
-	if len(suffix) > 8 {
-		suffix = suffix[:8]
-	}
-	if suffix == "" {
-		suffix = "nodiff"
-	}
-	return fmt.Sprintf("dec_%s_%s", time.Now().UTC().Format("20060102T150405"), suffix)
+// newDecisionID is unique per decision: the second-resolution timestamp keeps
+// ids sortable and readable, while the suffix hashes the diff together with
+// the creation time's nanoseconds so two decisions over the same diff within
+// the same second do not collide (a collision would make `settle outcome` and
+// `settle show` act on whichever record GetDecision found first).
+func newDecisionID(diffHash string, t time.Time) string {
+	sum := sha256.Sum256([]byte(diffHash + ":" + strconv.FormatInt(t.UnixNano(), 10)))
+	return fmt.Sprintf("dec_%s_%s", t.UTC().Format("20060102T150405"), hex.EncodeToString(sum[:])[:8])
 }
