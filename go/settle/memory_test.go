@@ -178,6 +178,51 @@ func TestSettleMemoryRejectRejects(t *testing.T) {
 	}
 }
 
+func settledNote(id, scope string) MemoryNote {
+	n := NewMemoryNote(MemoryProposal{Scope: scope, Claim: "c", Cites: []string{"dec-x"}}, OracleResult{Supported: true}, time.Now())
+	n.ID = id
+	n.Status = MemSettled
+	return n
+}
+
+func TestApplicableNotesScopeAndStatus(t *testing.T) {
+	notes := []MemoryNote{
+		settledNote("m-api", "api"),
+		settledNote("m-core", "go/core"),
+		settledNote("m-file", "web/app.tsx"),
+	}
+	proposed := settledNote("m-prop", "api")
+	proposed.Status = MemProposed
+	notes = append(notes, proposed)
+
+	got := ApplicableNotes(notes, []string{"api/handler.go"}, nil)
+	if len(got) != 1 || got[0].ID != "m-api" {
+		t.Fatalf("scope 'api' should match api/handler.go only (settled), got %v", noteIDs(got))
+	}
+
+	// Quarantined notes are excluded from auto-injection.
+	q := ApplicableNotes(notes, []string{"api/handler.go"}, map[string]bool{"m-api": true})
+	if len(q) != 0 {
+		t.Fatalf("quarantined note should be excluded, got %v", noteIDs(q))
+	}
+
+	// Directory- and basename-scoped matches.
+	if got := ApplicableNotes(notes, []string{"go/core/queue.go"}, nil); len(got) != 1 || got[0].ID != "m-core" {
+		t.Fatalf("scope 'go/core' should match go/core/queue.go, got %v", noteIDs(got))
+	}
+	if got := ApplicableNotes(notes, []string{"web/app.tsx"}, nil); len(got) != 1 || got[0].ID != "m-file" {
+		t.Fatalf("file scope should match exact file, got %v", noteIDs(got))
+	}
+}
+
+func noteIDs(notes []MemoryNote) []string {
+	ids := make([]string, len(notes))
+	for i, n := range notes {
+		ids[i] = n.ID
+	}
+	return ids
+}
+
 func TestSettleMemoryRefusesNonProposed(t *testing.T) {
 	cfg := DefaultConfig()
 	note := proposedNote()

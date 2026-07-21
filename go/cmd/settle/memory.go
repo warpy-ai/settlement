@@ -266,13 +266,24 @@ func cmdMemoryList(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	skills, err := store.LoadSkillLedger()
+	if err != nil {
+		return fail(stderr, err)
+	}
 	shown := 0
 	for _, n := range notes {
 		if *status != "" && n.Status != *status {
 			continue
 		}
-		fmt.Fprintf(stdout, "%s  %s  %-10s  scope=%s  cites=%d\n",
-			n.ID, n.CreatedAt.Format("2006-01-02 15:04"), n.Status, n.Scope, len(n.Cites))
+		adequacy := ""
+		if e := skills.Skills[n.ID]; e != nil {
+			adequacy = fmt.Sprintf("  adequacy=%.2f", e.Adequacy)
+			if e.Quarantined {
+				adequacy += " [QUARANTINED]"
+			}
+		}
+		fmt.Fprintf(stdout, "%s  %s  %-10s  scope=%s  cites=%d%s\n",
+			n.ID, n.CreatedAt.Format("2006-01-02 15:04"), n.Status, n.Scope, len(n.Cites), adequacy)
 		fmt.Fprintf(stdout, "    %s\n", n.Claim)
 		shown++
 	}

@@ -43,10 +43,18 @@ collect their verdicts, and let the `settle` CLI adjudicate.
    The spec lists the seats: persona name, voting power, and prompt file.
    Pick a short task id for this review (e.g. `review-<branch>-<date>`).
 
+   The panel's `subject.guided_by` lists settled memory-note ids whose scope
+   covers the files under review — the learned procedures that apply here.
+   Load each with `settle memory show <id>` and include its claim as
+   established guidance in every reviewer's prompt (step 3). Grading the
+   decision later will score these notes' adequacy (see the memory workflow),
+   so the guidance the panel actually used is recorded on the decision.
+
 3. **Spawn one subagent per seat — in parallel, independent.**
    Each subagent's prompt is:
    - the contents of the seat's persona file (`skill/settle/personas/<persona>.md`),
    - the full diff,
+   - any applicable guidance claims from `subject.guided_by`,
    - the verdict contract below, with the persona name filled in.
 
    Reviewers must not see each other's verdicts, your opinions, or the
@@ -213,6 +221,18 @@ You are the curator; you never persist a memory unilaterally.
 
 Never edit `.settlement/memory/*.md` by hand — only the CLI writes them, so
 the oracle verdict and settlement provenance stay intact.
+
+**Settled memory is scored by outcomes.** A settled note whose scope covers a
+change under review is auto-injected as guidance and recorded on that
+decision. When the decision is graded (`settle outcome`), the note's adequacy
+moves with the result — credit when the guided change held, a larger debit
+when it was reverted. A note that falls below threshold is **quarantined**:
+still visible in `settle memory list` / `settle skills`, but no longer
+auto-injected into new reviews until a curator-settled revision restores it.
+This is the same punitive selection that scores personas (`settle ledger`),
+applied to procedures — bad guidance is pruned by evidence. Inspect it with:
+
+    settle skills
 
 ## Multi-task and worktree hosts (Claude Code, Cursor, …)
 

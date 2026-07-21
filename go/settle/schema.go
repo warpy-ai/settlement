@@ -87,6 +87,10 @@ type Subject struct {
 	Files      []string `json:"files,omitempty"`
 	Lines      int      `json:"lines,omitempty"`  // changed (+/-) line count
 	Branch     string   `json:"branch,omitempty"` // branch under review (worktree-aware hosts)
+	// GuidedBy lists the settled memory-note ids whose guidance applied to
+	// this review (the "used_skill" edges of docs §3.2). Grading the decision
+	// propagates credit or penalty to these notes' adequacy scores.
+	GuidedBy []string `json:"guided_by,omitempty"`
 }
 
 // Verdict is one persona's review, written by the host assistant's subagent.

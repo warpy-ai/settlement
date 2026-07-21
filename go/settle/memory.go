@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -308,6 +309,50 @@ func parseMemoryNote(data []byte) (MemoryNote, error) {
 		return MemoryNote{}, fmt.Errorf("malformed note front matter: %w", err)
 	}
 	return note, nil
+}
+
+// --- guidance ---
+
+// ApplicableNotes returns the settled memory notes whose scope covers any of
+// the given files — the guidance that applies to a change under review. Notes
+// excluded by `quarantined` (below-adequacy, see the skill ledger) are dropped
+// from auto-injection. Results are ordered as stored (newest first).
+func ApplicableNotes(notes []MemoryNote, files []string, quarantined map[string]bool) []MemoryNote {
+	var out []MemoryNote
+	for _, n := range notes {
+		if n.Status != MemSettled || quarantined[n.ID] {
+			continue
+		}
+		if scopeCoversAny(n.Scope, files) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// scopeCoversAny reports whether a note scope applies to any file. A scope
+// covers a file when it is the file, a parent directory, or its basename —
+// e.g. scope "api" covers "api/handler.go", scope "go/core" covers
+// "go/core/queue.go".
+func scopeCoversAny(scope string, files []string) bool {
+	scope = normalizePath(scope)
+	if scope == "" {
+		return false
+	}
+	for _, f := range files {
+		f = normalizePath(f)
+		switch {
+		case f == scope:
+			return true
+		case strings.HasPrefix(f, scope+"/"):
+			return true
+		case path.Dir(f) == scope:
+			return true
+		case path.Base(f) == scope:
+			return true
+		}
+	}
+	return false
 }
 
 // --- curator feed ---

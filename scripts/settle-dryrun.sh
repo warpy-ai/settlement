@@ -117,4 +117,43 @@ done
 test -f ".settlement/memory/$MEMID.md"
 echo "memory OK: $MEMID"
 
+# --- skill adequacy: the settled note guides a new review, whose reverted
+# outcome drops the note's adequacy score. ---
+cat > guided.patch <<'EOF'
+diff --git a/api/router.go b/api/router.go
+index 3333333..4444444 100644
+--- a/api/router.go
++++ b/api/router.go
+@@ -1,2 +1,3 @@
+ func route() {
++	w.Header().Set("Allow", "POST")
+ }
+EOF
+# The panel for an api/ change should be guided by the settled api-scoped note.
+"$SETTLE" panel --diff-file guided.patch > guided-panel.json
+python3 - <<PY
+import json
+p = json.load(open("guided-panel.json"))
+assert "$MEMID" in (p["subject"].get("guided_by") or []), p["subject"]
+print("guidance injected OK")
+PY
+mkdir -p .settlement/verdicts/guided
+for persona in correctness security api-contract; do
+  cat > ".settlement/verdicts/guided/$persona.json" <<EOF
+{"schema":"settle/verdict@1","persona":"$persona","decision":"approve","confidence":0.9,"reasoning":"Follows the settled Allow-header guidance."}
+EOF
+done
+"$SETTLE" tally --task guided --panel guided-panel.json > guided-decision.json
+GID="$(python3 -c 'import json; print(json.load(open("guided-decision.json"))["id"])')"
+"$SETTLE" outcome --decision "$GID" --result reverted >/dev/null
+"$SETTLE" skills | grep "$MEMID" | grep -q "reverted=1"
+python3 - <<PY
+import json
+# adequacy dropped below the starting 1.0 after one reverted guided change
+sl = json.load(open(".settlement/skills.json"))["skills"]["$MEMID"]
+assert sl["adequacy"] < 1.0, sl
+assert sl["reverted"] == 1 and sl["uses"] == 1, sl
+print("adequacy OK:", round(sl["adequacy"], 3))
+PY
+
 echo "settle dry run: PASS"

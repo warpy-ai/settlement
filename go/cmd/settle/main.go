@@ -30,6 +30,7 @@ Usage:
   settle why    ID | --file F                Explain a decision, or a file's settled history
   settle memory <candidates|propose|list|show>  Consolidate decisions into settled memory
   settle ledger                              Print persona voting powers
+  settle skills                              Print memory-note adequacy scores
 
 Exit codes for tally: 0 approve, 2 reject/revise, 3 no consensus, 1 error.`
 
@@ -63,6 +64,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdMemory(args[1:], stdin, stdout, stderr)
 	case "ledger":
 		return cmdLedger(stdout, stderr)
+	case "skills":
+		return cmdSkills(stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprintln(stdout, usage)
 		return 0
@@ -99,7 +102,7 @@ func cmdInit(stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "initialized %s\n", store.Root)
-	fmt.Fprintln(stdout, "commit config.json, ledger.json, and decisions.jsonl; verdicts/ stays untracked scratch")
+	fmt.Fprintln(stdout, "commit config.json, ledger.json, skills.json, decisions.jsonl, and memory/; verdicts/ stays untracked scratch")
 	return 0
 }
 
@@ -131,7 +134,25 @@ func cmdPanel(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	panel := settle.BuildPanel(cfg, ledger, diff)
 	stampBranch(&panel)
+	stampGuidance(store, &panel)
 	return printJSON(stdout, stderr, panel)
+}
+
+// stampGuidance attaches the settled memory notes whose scope covers the files
+// under review, so the reviewers get the relevant learned procedures and the
+// decision records which guidance it was made under (the used_skill edges).
+// Quarantined (below-adequacy) notes are excluded from auto-injection.
+func stampGuidance(store *settle.Store, panel *settle.PanelSpec) {
+	notes, err := store.ReadMemoryNotes()
+	if err != nil || len(notes) == 0 {
+		return
+	}
+	applicable := settle.ApplicableNotes(notes, panel.Subject.Files, store.QuarantinedSkills())
+	ids := make([]string, 0, len(applicable))
+	for _, n := range applicable {
+		ids = append(ids, n.ID)
+	}
+	panel.Subject.GuidedBy = ids
 }
 
 // stampBranch records the current branch on the panel subject so decisions
@@ -188,6 +209,7 @@ func cmdTally(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		panel = settle.BuildPanel(cfg, ledger, diff)
 		stampBranch(&panel)
+		stampGuidance(store, &panel)
 	}
 
 	verdicts, err := settle.LoadVerdicts(store.VerdictsDir(*taskID))
@@ -274,6 +296,32 @@ func cmdOutcome(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := store.AppendOutcomeEvent(settle.NewOutcomeEvent(decision.ID, *result)); err != nil {
 		return fail(stderr, err)
+	}
+
+	// Propagate the same ground truth to the adequacy of any memory notes that
+	// guided this decision (docs §3.2). Notes crossing below threshold are
+	// quarantined and stop being auto-injected.
+	if len(decision.Subject.GuidedBy) > 0 {
+		sl, err := store.LoadSkillLedger()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if err := settle.ApplyAdequacy(&sl, decision, *result, settle.DefaultAdequacyParams()); err != nil {
+			return fail(stderr, err)
+		}
+		if err := store.SaveSkillLedger(sl); err != nil {
+			return fail(stderr, err)
+		}
+		for _, id := range decision.Subject.GuidedBy {
+			if e := sl.Skills[id]; e != nil {
+				status := ""
+				if e.Quarantined {
+					status = "  [QUARANTINED: excluded from auto-injection]"
+				}
+				fmt.Fprintf(stdout, "guidance %s adequacy=%.2f (held=%d reverted=%d)%s\n",
+					id, e.Adequacy, e.Held, e.Reverted, status)
+			}
+		}
 	}
 
 	fmt.Fprintf(stdout, "recorded %s as %s; ledger updated:\n", decision.ID, *result)
@@ -536,6 +584,36 @@ func cmdLedger(stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%-14s power=%.2f reviews=%d aligned=%d misjudged=%d%s\n",
 			persona, e.VotingPower, e.Reviews, e.Aligned, e.Misjudged, status)
+	}
+	return 0
+}
+
+func cmdSkills(stdout, stderr io.Writer) int {
+	store, code := openStore(stderr)
+	if code != 0 {
+		return code
+	}
+	sl, err := store.LoadSkillLedger()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(sl.Skills) == 0 {
+		fmt.Fprintln(stdout, "no scored guidance yet (grade decisions that were made under memory guidance)")
+		return 0
+	}
+	ids := make([]string, 0, len(sl.Skills))
+	for id := range sl.Skills {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		e := sl.Skills[id]
+		status := ""
+		if e.Quarantined {
+			status = "  [QUARANTINED: excluded from auto-injection]"
+		}
+		fmt.Fprintf(stdout, "%s  adequacy=%.2f  uses=%d held=%d reverted=%d%s\n",
+			id, e.Adequacy, e.Uses, e.Held, e.Reverted, status)
 	}
 	return 0
 }
